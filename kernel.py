@@ -10,12 +10,13 @@ class Kernel:
   def __init__(self): 
     pass
 
+  @staticmethod
   def factory(kernel_name = "sqe"): 
-    if kernel_name == "sqe": 
-      return SQEKernel()
-    elif kernel_name == "per": 
-      return PerKernel()
-  
+    return {
+      'sqe': SQEKernel(), 
+      'per': PerKernel(),
+      }.get(kernel_name, SQEKernel())
+
   def K(self, Xi, Xj, hypers=None): 
     raise NotImplementedError
 
@@ -37,7 +38,7 @@ class SQEKernel(Kernel):
     """ local func to set hyperparams from a vector """
     self._sigma2    = hypers[-1]                     # covariance marginal variance
     self._lscales   = hypers[:-1]                    # length scales
-    self._inv_V     = np.diag( 1./(self._lscales*self._lscales)) # inverse diag length scale matrix (for mahal dist)
+    self._inv_V     = np.diag( .5/(self._lscales*self._lscales)) # inverse diag length scale matrix (for mahal dist)
 
   def K(self, Xi, Xj, hypers=None): 
     if len(Xi.shape) == 1:
@@ -50,11 +51,18 @@ class SQEKernel(Kernel):
       assert len(hypers)==self._input_dim+1, "num hypers doesn't match"
       self._set_hypers(hypers)
 
-    # force Xi, Xj to be 2-d arrays
+    # reshape to make sure they are stacks of vecs
     Xi = np.reshape( Xi, (-1, self._input_dim) )
     Xj = np.reshape( Xj, (-1, self._input_dim) )
+    
+    # one dimension is a special case...
+    if len(Xi.shape)==1: 
+      dists = cdist(Xi, Xj)
+      return self._sigma2*np.exp(-(.5/self._lscales)*dists*dists)
+
+    # force Xi, Xj to be 2-d arrays
     dists = cdist(Xi, Xj, 'mahalanobis', VI=self._inv_V)
-    return self._sigma2 * np.exp( -.5 * dists )
+    return self._sigma2 * np.exp( - dists*dists )
 
   def hyper_params(self):
     return np.append( self._lscales, self._sigma2 )

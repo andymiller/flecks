@@ -1,8 +1,9 @@
 import numpy as np
 from ess import elliptical_slice
-from sample_covar_hypers import whitened_mh
-from util import nd_grid_centers
-from kernel import SQEKernel
+from util import nd_grid_centers, whitened_mh, x_grid_centers
+from kernel import Kernel, SQEKernel
+from kron_util import kron_mat_vec_prod
+from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 #
 # models a discretized log gaussian cox process in N dimensions
@@ -22,7 +23,7 @@ from kernel import SQEKernel
 
 class LGCP: 
 
-  def __init__(self, dim=2, grid_dim=(25,25), bbox=[(0,1), (0,1)], covar=["sqe", "sqe"]):
+  def __init__(self, dim=2, grid_dim=(50,50), bbox=[(0,1), (0,1)], covar=["sqe", "sqe"]):
     self._dim      = dim              # dimensionality of the point process
     self._grid_dim = grid_dim         # number of tiles for each dimension
     self._bbox     = bbox             # range of each dimension
@@ -30,16 +31,12 @@ class LGCP:
     self._sigma_chol = None
     assert self._dim == len(self._grid_dim), 'LGCP Space dimensions not coherent'
 
-    # set up covariance parameters
-    # different dimensions may have different covariance functions/params
-    self._kern = SQEKernel(length_scale = 20*np.ones(self._dim), sigma2=1)
-
     #set up kernel for each dimension 
     self._kerns = []
     for d in range(self._dim): 
         self._kerns.append( Kernel.factory(covar[d]) )
-
-  def fit(self, data, Nsamps=550, verbose=T): 
+  
+  def fit(self, data, Nsamps=550, verbose=True): 
     """ data should come in as a dim by N dimensional numpy array """
     assert self._dim == data.shape[1]
     
@@ -47,16 +44,19 @@ class LGCP:
     grid_counts, edges = np.histogramdd( data, \
                                          bins=self._grid_dim, \
                                          range=self._bbox )
-    self._grid_counts  = grid_counts.flatten()
-    self._grid_centers = nd_grid_centers(edges)
+    self._grid_counts  = grid_counts.flatten('F')   # counts in each box
+    self._grids        = x_grid_centers(edges)      # list of grid centers for each dimension 
+    #self._grid_centers = nd_grid_centers(edges)     # center of each box (list of points)
 
     # number of latent z's to sample (including bias term)
     Nz = len(self._grid_counts) + 1
 
     # sample from the posterior w/ ESS, slice sample Hypers
-    z_curr  = np.zeros( Nz )
-    h_curr  = self._kern.hyper_params()
-    ll_curr = None
+    z_curr  = np.zeros( Nz )                    # current state of latent GP (Z)
+    h_curr  = self._kern_hypers()               # current values of hyper params
+    ll_curr = None                              # current log likelihood of obs
+
+    # keep track of all samples
     z_samps = np.zeros( (Nsamps, Nz) )
     h_samps = np.zeros( (Nsamps, len(h_curr) ) )
     lls     = np.zeros( Nsamps )
@@ -65,17 +65,40 @@ class LGCP:
       if i%10==0 and verbose: print "  samp %d of %d"%(i,Nsamps)
 
       #sample latent surface
-      prior_samp = self._gen_prior()
+      prior_samp = self._gen_prior(h_curr)
       z_curr, log_lik = elliptical_slice( z_curr, \
                                           prior_samp, \
                                           self._log_like, \
                                           cur_lnpdf=ll_curr)
+      
+      ## whitens latent field (probably should find better place for this)
+      def whiten(th, f): 
+        Ks = self._gram_list(th)
+        Ls = [np.linalg.cholesky(K) for K in Ks]
+        Ls_inverse = [np.linalg.inv(L) for L in Ls]
+        nu = kron_mat_vec_prod(Ls_inverse, f)
+        return nu
+
+      def unwhiten(thp, nu): 
+        Ks = self._gram_list(thp)
+        Ls = [np.linalg.cholesky(K) for K in Ks]
+        fp = kron_mat_vec_prod(Ls, nu)
+        return fp
+
+      def hyper_prior_lnpdf(h): 
+        hparams = self._chunk_hypers(h)
+        lls = 0
+        for d in range(len(hparams)):
+          lls += self._kerns[d].prior_lnpdf(hparams[d])
+        return lls
+
       #sample hyper params
       h_curr, z_hyper, accepted, ll = whitened_mh( h_curr, \
-                                                  z_curr[1:], \
-                                                  lambda(h): self._kern.K(self._grid_centers, self._grid_centers, h), \
-                                                  lambda(z): self._log_like(np.append(z_curr[0], z)), \
-                                                  lambda(h): self._kern.prior_lnpdf(h) )
+                                                   z_curr[1:], \
+                                                   whiten, \
+                                                   unwhiten, \
+                                                   lambda(z): self._log_like(np.append(z_curr[0], z)), \
+                                                   hyper_prior_lnpdf )
       z_curr = np.append(z_curr[0], z_hyper)
     
       #store samples
@@ -89,31 +112,49 @@ class LGCP:
     print "final acceptance rate: ", float(accept_rate)/Nsamps
     self._z_samps = z_samps[100:,]
     self._h_samps = h_samps[100:,]
+    self._lls     = lls
     return z_samps, h_samps
 
   def posterior_mean_lambda(self): 
     """ return the posterior mean lambda surface """
     zvecs  = (self._z_samps[:,0] + self._z_samps[:,1:].T).T
     lamvec = np.exp(zvecs).mean(axis=0)
-    return np.reshape(lamvec, self._grid_dim)
+    return np.reshape(lamvec, self._grid_dim, order='F')
 
   def posterior_var_lambda(self):
     """ return the posterior variance of the lambda surface """
     zvecs = (self._z_samps[:,0] + self._z_samps[:,1:].T).T
     lamvec = np.exp(zvecs).var(axis=0)
+    return np.reshape(lamvec, self._grid_dim, order='F')
 
   def plot_3d(self):
-    X,T = np.meshgrid(xgrid, tgrid)
-    Z   = lam(X, T, mus, omegas)
+    X,T = np.meshgrid(self._grids[0], self._grids[1])
+    Z   = self.posterior_mean_lambda()
     fig = plt.figure(figsize=(14,6))
     # `ax` is a 3D-aware axis instance because of the projection='3d' keyword argument to add_subplot
     ax = fig.add_subplot(1, 1, 1, projection='3d')
     # surface_plot with color grading and color bar
-    p = ax.plot_surface(X, T, Z, rstride=1, cstride=1, cmap=cm.coolwarm, linewidth=0, antialiased=False)
+    p = ax.plot_surface(X, T, Z, rstride=1, cstride=1, linewidth=0, antialiased=False)
     cb = fig.colorbar(p, shrink=0.5)
 
+  def _kern_hypers(self): 
+    """ returns the hyperparameters associated with each kernel 
+    as a vector """
+    hypers = []
+    for d in range(self._dim): 
+        hypers.append( self._kerns[d].hyper_params() )
+    return np.reshape(hypers, (-1,))
 
-
+  def _chunk_hypers(self, hypers): 
+    """ separate out a flattened vector of hyperparameters to a 
+    list of arrays of them (using kernel information) """
+    kern_hypers = []
+    startI = 0
+    for d in range(len(self._kerns)):
+      endI = startI + len(self._kerns[d].hyper_params())
+      kern_hypers.append( hypers[startI:endI] )
+      startI = endI
+    return kern_hypers
 
   def _log_like(self, th): 
     """ approximate log like is just independent poissons """
@@ -123,27 +164,45 @@ class LGCP:
     ll = loglam * self._grid_counts - lam  # log-like
     return np.sum(ll)
 
-  def _gen_prior(self):
-    """ populate covariance matrix and generate a sample """
-    if self._sigma_chol is None:
-        Sigma = self._kern.K(self._grid_centers, self._grid_centers) + np.diag(1e-6*np.ones(len(self._grid_centers)))
-        self._sigma_chol = np.linalg.cholesky(Sigma)  # TODO use goddamn toeplitz or something for this
-    y = np.random.randn(len(self._grid_centers))  # standard normal
-    z0 = np.sqrt(10)*np.random.randn()
-    z = np.append(z0, self._sigma_chol.dot(y))
-    return z
+  def _gen_prior(self, hparams):
+    """ generate from the GP prior (with the object's grid points, and 
+    some flattened vector of hyperparameters for the list of covariance funcs """
+    Ks = self._gram_list(hparams)             # covariance mats for each dimension
+    Ls = [np.linalg.cholesky(K) for K in Ks]  # cholesky of each cov mat
+
+    #generate spatial component and bias 
+    z_spatial = kron_mat_vec_prod( Ls, np.random.randn(len(self._grid_counts)) )
+    z_bias    = np.sqrt(10)*np.random.randn()
+    return np.append(z_bias, z_spatial)
+
+  def _gram_list(self, hparams): 
+    """ generate a list of gram matrices, one for each dimension, 
+    given the fixed grid """
+    kern_hypers = self._chunk_hypers(hparams)
+    Ks = []
+    for d in range(len(self._kerns)):
+        Kd = self._kerns[d].K(self._grids[d], self._grids[d], kern_hypers[d]) + \
+             np.diag(1e-6*np.ones(len(self._grids[d])))
+        Ks.append(Kd)
+    return Ks
+     
 
 if __name__=="__main__":
   
   import pylab as plt
   #x = np.random.rand(500,2)
-  x = np.random.beta(a=1, b=2, size=(1000,2))
+  x = np.row_stack( (np.random.beta(a=8, b=2, size=(500,2)), 
+                     np.random.beta(a=2, b=8, size=(500,2)) ) )
+  
+  x[500:,0] = 1.0 - x[500:,0]
+
   lgcp = LGCP()
   z_samps = lgcp.fit(x)
 
+  plt.plot(lgcp._lls)
+  plt.show()
   lam_mean = lgcp.posterior_mean_lambda()
-  #print lam_mean
-  #print lam_mean.mean()
+  
   fig = plt.figure()
   plt.imshow(lam_mean, interpolation='none', origin='lower', extent=[0,1,0,1])
   plt.colorbar()
@@ -158,7 +217,27 @@ if __name__=="__main__":
   axarr[0].hist(hsamps[:,0], 20, normed=True)
   axarr[1].hist(hsamps[:,1], 20, normed=True)
   plt.show()
-  fig.savefig('lgcp_length_scale_dist_test.pdf')
 
+  #fig.savefig('lgcp_length_scale_dist_test.pdf')
 
+  from mpl_toolkits.mplot3d import Axes3D
+  from matplotlib import cm
+  from matplotlib.ticker import LinearLocator, FormatStrFormatter
+  import matplotlib.pyplot as plt
+  import numpy as np
 
+  fig = plt.figure()
+  ax = fig.gca(projection='3d')
+  X = lgcp._grids[0]
+  Y = lgcp._grids[1]
+  X, Y = np.meshgrid(X, Y)
+  Z = lam_mean 
+  surf = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap=cm.coolwarm, \
+                         linewidth=0, antialiased=False)
+  ax.set_zlim(np.min(lam_mean), np.max(lam_mean))
+  ax.zaxis.set_major_locator(LinearLocator(10))
+  ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
+  fig.colorbar(surf, shrink=0.5, aspect=5)
+  
+  plt.show()
+  
