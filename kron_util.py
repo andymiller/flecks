@@ -31,10 +31,14 @@ def kron_multi(kron_pieces):
       A = np.kron(A, Ad)
   return A
 
+
+def kron_inv(kron_pieces): 
+  return [np.linalg.inv(A) for A in kron_pieces]
+
 if __name__ == "__main__":
 
   # set up kronecker pieces
-  As = [ np.random.random((3,3)), np.random.random((3,3)), np.random.random((2,2)) ]
+  As = [ np.random.random((5,5)), np.random.random((3,3)), np.random.random((2,2)) ]
   A  = kron_multi(As)
 
   ##
@@ -52,6 +56,7 @@ if __name__ == "__main__":
   #plt.subplot(2, 1, 2); plt.hist(fast_prod, bins=100);
   #plt.show()
 
-
+  # verify kron inverse
+  print "inverse matches: ", np.allclose( np.linalg.inv(A), kron_multi(kron_inv(As)))
 
 

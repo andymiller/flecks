@@ -28,7 +28,6 @@ class LGCP:
     self._grid_dim = grid_dim         # number of tiles for each dimension
     self._bbox     = bbox             # range of each dimension
     self._data     = None
-    self._sigma_chol = None
     assert self._dim == len(self._grid_dim), 'LGCP Space dimensions not coherent'
 
     #compute cell volume
@@ -42,7 +41,7 @@ class LGCP:
     else: 
       self._kern = Kern
   
-  def fit(self, data, Nsamps=550, verbose=True): 
+  def fit(self, data, Nsamps=2000, verbose=True): 
     """ data should come in as a dim by N dimensional numpy array """
     assert self._dim == data.shape[1]
     
@@ -50,9 +49,8 @@ class LGCP:
     grid_counts, edges = np.histogramdd( data, \
                                          bins=self._grid_dim, \
                                          range=self._bbox )
-    self._grid_counts  = grid_counts.flatten('F')   # counts in each box
-    self._grids        = x_grid_centers(edges)      # list of grid centers for each dimension 
-    #self._grid_centers = nd_grid_centers(edges)     # center of each box (list of points)
+    self._grid_counts = np.ravel(grid_counts, order='C')  # counts in each box
+    self._grids       = x_grid_centers(edges)      # list of grid centers for each dimension 
 
     # number of latent z's to sample (including bias term)
     Nz = len(self._grid_counts) + 1
@@ -76,7 +74,6 @@ class LGCP:
                                           prior_samp, \
                                           self._log_like, \
                                           cur_lnpdf=ll_curr)
-      
       ## whitens latent field (probably should find better place for this)
       def whiten(th, f): 
         Ks = self._kern.gram_list(th, self._grids)
@@ -99,7 +96,7 @@ class LGCP:
                lambda(z): self._log_like(np.append(z_curr[0], z)), \
                lambda(h): self._kern.hyper_prior_lnpdf(h) )
       z_curr = np.append(z_curr[0], z_hyper)
-    
+
       #store samples
       z_samps[i,] = z_curr
       h_samps[i,] = h_curr
@@ -109,8 +106,8 @@ class LGCP:
       accept_rate += accepted
 
     print "final acceptance rate: ", float(accept_rate)/Nsamps
-    self._z_samps = z_samps[300:,]
-    self._h_samps = h_samps[300:,]
+    self._z_samps = z_samps[1000:,]
+    self._h_samps = h_samps[1000:,]
     self._lls     = lls
     return z_samps, h_samps
 
@@ -118,23 +115,13 @@ class LGCP:
     """ return the posterior mean lambda surface """
     zvecs  = (self._z_samps[:,0] + self._z_samps[:,1:].T).T
     lamvec = self._cell_vol * np.exp(zvecs).mean(axis=0)
-    return np.reshape(lamvec, self._grid_dim, order='F')
+    return np.reshape(lamvec, self._grid_dim, order='C')
 
   def posterior_var_lambda(self):
     """ return the posterior variance of the lambda surface """
     zvecs = (self._z_samps[:,0] + self._z_samps[:,1:].T).T
     lamvec = self._cell_vol * np.exp(zvecs).var(axis=0)
-    return np.reshape(lamvec, self._grid_dim, order='F')
-
-  #def plot_3d(self):
-  #  X,T = np.meshgrid(self._grids[0], self._grids[1])
-  #  Z   = self.posterior_mean_lambda()
-  #  fig = plt.figure(figsize=(14,6))
-  #  # `ax` is a 3D-aware axis instance because of the projection='3d' keyword argument to add_subplot
-  #  ax = fig.add_subplot(1, 1, 1, projection='3d')
-  #  # surface_plot with color grading and color bar
-  #  p = ax.plot_surface(X, T, Z, rstride=1, cstride=1, linewidth=0, antialiased=False)
-  #  cb = fig.colorbar(p, shrink=0.5)
+    return np.reshape(lamvec, self._grid_dim, order='C')
 
   def _log_like(self, th): 
     """ approximate log like is just independent poissons """
@@ -157,34 +144,39 @@ class LGCP:
 
 
 if __name__=="__main__":
-  
   import pylab as plt
-  #x = np.random.rand(500,2)
   x = np.row_stack( (np.random.beta(a=5, b=2, size=(500,2)), 
                      np.random.beta(a=2, b=5, size=(500,2)) ) )
+  x = np.loadtxt('/Users/acm/Data/nba_shots_2013/LeBron James_shot_attempts.txt')
+  x = x[:, 0:2]
   #x[500:,0] = 1.0 - x[500:,0]
 
-  lgcp = LGCP()
+  # create appropriately sized lgcp object and fit
+  lgcp = LGCP(dim=2, grid_dim=(47,50), bbox=[(0,47), (0,50)])
   z_samps = lgcp.fit(x)
 
+  # plot log like trace as a sanity check
   plt.plot(lgcp._lls)
   plt.show()
   lam_mean = lgcp.posterior_mean_lambda()
   
+  #show the court with points
   fig = plt.figure()
-  plt.imshow(lam_mean.T, interpolation='none', origin='lower', extent=[0,1,0,1])
+  plt.imshow(lam_mean.T, interpolation='none', origin='lower', extent=[0,47,0,50])
   plt.colorbar()
   plt.hold(True)
   plt.scatter(x[:,0], x[:,1])
   plt.show()
   
   #plot hyperparam posterior dists
-  hsamps = lgcp._h_samps
+  hnames = ('Marginal var', 'lscale1', 'lscale2')
   fig = plt.figure()
-  f, axarr = plt.subplots(2, sharex=True)
-  axarr[0].hist(hsamps[:,0], 20, normed=True)
-  axarr[1].hist(hsamps[:,1], 20, normed=True)
+  for i in range( lgcp._h_samps.shape[1] ):
+      plt.subplot(3, 1, i)
+      plt.hist(lgcp._h_samps[:,i], 20, normed=True)
+      plt.title(hnames[i])
   plt.show()
+
 
   #fig.savefig('lgcp_length_scale_dist_test.pdf')
 

@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial.distance import cdist
+from scipy.stats import gamma
 ####################################################
 # Kernel classes 
 #   - MultiKronKernel: class that takes advantage of 
@@ -31,10 +32,11 @@ class MultiKronKernel:
     given the fixed grid """
     kern_hypers = self._chunk_hypers(hparams)
     Ks = []
+    scale = self._scale ** (1./len(grids))
     for d in range(len(self._kerns)):
         Kd = self._kerns[d].K( grids[d], grids[d], kern_hypers[d]) + \
                                np.diag(1e-8*np.ones(len(grids[d])) )
-        Ks.append(Kd)
+        Ks.append(scale*Kd)
     return Ks
  
   def hyper_prior_lnpdf(self, h): 
@@ -49,7 +51,7 @@ class MultiKronKernel:
   def hypers(self): 
     """ returns the hyperparameters associated with each kernel 
     as a vector """
-    hypers = []
+    hypers = [self._scale]
     for k in self._kerns: 
         hypers.append( k.hyper_params() )
     return np.reshape(hypers, (-1,))
@@ -171,7 +173,8 @@ class SQEKernelUnscaled(Kernel):
 
   def prior_lnpdf(self, hypers): 
     """ jeffrey's/scale-free prior on length scales """
-    return -np.sum(np.log(hypers))
+    #return -np.sum(np.log(hypers))
+    return np.sum(gamma(12, scale=.5).logpdf(hypers))
 
 
 class SQEKernel(Kernel): 
