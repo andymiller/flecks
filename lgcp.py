@@ -1,9 +1,9 @@
 import numpy as np
+from pproc import DiscretizedPointProcess
 from ess import elliptical_slice
-from util import nd_grid_centers, whitened_mh, x_grid_centers
-from kernel import MultiKronKernel #Kernel, SQEKernel
+from util import  whitened_mh, spherical_proposal
+from kernel import MultiKronKernel
 from kron_util import kron_mat_vec_prod
-from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 #
 # models a discretized log gaussian cox process in N dimensions
@@ -21,36 +21,25 @@ from mpl_toolkits.mplot3d.axes3d import Axes3D
 #
 #
 
-class LGCP: 
+class LGCP(DiscretizedPointProcess): 
 
-  def __init__(self, dim=2, grid_dim=(50,50), bbox=[(0,1), (0,1)], kern=None):
-    self._dim      = dim              # dimensionality of the point process
-    self._grid_dim = grid_dim         # number of tiles for each dimension
-    self._bbox     = bbox             # range of each dimension
-    self._data     = None
-    assert self._dim == len(self._grid_dim), 'LGCP Space dimensions not coherent'
-
-    #compute cell volume
-    self._cell_vol = 1.0
-    for d in range(self._dim):
-      self._cell_vol *= float(bbox[d][1] - bbox[d][0]) / grid_dim[d] 
+  def __init__(self, dim=2, grid_dim=(50,50), bbox=[(0,1), (0,1)], \
+                     kernel_types=["sque", "sque"], kern=None):
+    ## initalize discretized grid
+    super(LGCP, self).__init__(dim, grid_dim, bbox)
 
     #set up kernel for each dimension 
     if kern is None: 
-      self._kern = MultiKronKernel( ["sqeu", "sqeu"] )
+      self._kern = MultiKronKernel(kernel_types)
     else: 
       self._kern = Kern
   
-  def fit(self, data, Nsamps=2000, verbose=True): 
+  def fit(self, data, Nsamps=2000, prop_scale=1, \
+                verbose=True, burnin=500, num_ess=10): 
     """ data should come in as a dim by N dimensional numpy array """
-    assert self._dim == data.shape[1]
-    
+
     # grid data into tile counts
-    grid_counts, edges = np.histogramdd( data, \
-                                         bins=self._grid_dim, \
-                                         range=self._bbox )
-    self._grid_counts = np.ravel(grid_counts, order='C')  # counts in each box
-    self._grids       = x_grid_centers(edges)      # list of grid centers for each dimension 
+    self._count_data(data)
 
     # number of latent z's to sample (including bias term)
     Nz = len(self._grid_counts) + 1
@@ -68,34 +57,32 @@ class LGCP:
     for i in range(Nsamps):
       if i%10==0 and verbose: print "  samp %d of %d"%(i,Nsamps)
 
-      #sample latent surface
-      prior_samp = self._gen_prior(h_curr)
-      z_curr, log_lik = elliptical_slice( z_curr, \
-                                          prior_samp, \
-                                          self._log_like, \
-                                          cur_lnpdf=ll_curr)
-      ## whitens latent field (probably should find better place for this)
+      ## whitens/unwhitens 
       def whiten(th, f): 
-        Ks = self._kern.gram_list(th, self._grids)
-        Ls = [np.linalg.cholesky(K) for K in Ks]
-        Ls_inverse = [np.linalg.inv(L) for L in Ls]
-        nu = kron_mat_vec_prod(Ls_inverse, f)
-        return nu
-
+        return self._kern.whiten_process(f, th, self._grids)
       def unwhiten(thp, nu): 
-        Ks = self._kern.gram_list(thp, self._grids)
-        Ls = [np.linalg.cholesky(K) for K in Ks]
-        fp = kron_mat_vec_prod(Ls, nu)
-        return fp
+        return  self._kern.gen_prior(thp, self._grids, nu=nu)
 
       #sample hyper params
       h_curr, z_hyper, accepted, ll = whitened_mh( h_curr, \
                z_curr[1:], \
-               whiten, \
-               unwhiten, \
-               lambda(z): self._log_like(np.append(z_curr[0], z)), \
-               lambda(h): self._kern.hyper_prior_lnpdf(h) )
+               whiten   = whiten, #lambda(th, f): self._kern.whiten_process(f, th, self._grids), \
+               unwhiten = unwhiten, #lambda(thp, nu): self._kern.gen_prior(thp, self._grids, nu=nu), \
+               Lfn      = lambda(z): self._log_like(np.append(z_curr[0], z)), \
+               ln_prior = lambda(h): self._kern.hyper_prior_lnpdf(h), \
+               prop_dist = lambda(th): spherical_proposal(th, prop_scale))
       z_curr = np.append(z_curr[0], z_hyper)
+
+      ## sample latent surface (multiple runs of ESS)
+      for resamp_i in range(num_ess):
+        #gen bias and spatial comp
+        prior_samp = np.append( np.sqrt(10)*np.random.randn(),
+                                self._kern.gen_prior(h_curr, self._grids) ) 
+        z_curr, log_lik = elliptical_slice( z_curr, \
+                                            prior_samp, \
+                                            self._log_like )
+
+
 
       #store samples
       z_samps[i,] = z_curr
@@ -106,15 +93,24 @@ class LGCP:
       accept_rate += accepted
 
     print "final acceptance rate: ", float(accept_rate)/Nsamps
-    self._z_samps = z_samps[1000:,]
-    self._h_samps = h_samps[1000:,]
+    self._z_samps = z_samps[burnin:,]
+    self._h_samps = h_samps[burnin:,]
     self._lls     = lls
+    self._burnin  = burnin
     return z_samps, h_samps
 
-  def posterior_mean_lambda(self): 
+  def posterior_mean_lambda(self, thin=1): 
     """ return the posterior mean lambda surface """
     zvecs  = (self._z_samps[:,0] + self._z_samps[:,1:].T).T
+    zvecs  = zvecs[ np.arange(0,zvecs.shape[0],thin), :]  #thin
     lamvec = self._cell_vol * np.exp(zvecs).mean(axis=0)
+    return np.reshape(lamvec, self._grid_dim, order='C')
+
+  def posterior_max_ll_lambda(self):
+    """ returns the max samp lambda """
+    max_i = self._lls[self._burnin:].argmax()
+    zvec = self._z_samps[max_i,0] + self._z_samps[max_i,1:]
+    lamvec = self._cell_vol * np.exp(zvec)
     return np.reshape(lamvec, self._grid_dim, order='C')
 
   def posterior_var_lambda(self):
@@ -130,17 +126,6 @@ class LGCP:
     #pr(x | lam) = lam^x * exp(-lam) / x!
     ll = loglam * self._grid_counts - lam  # log-like
     return np.sum(ll)
-
-  def _gen_prior(self, hparams):
-    """ generate from the GP prior (with the object's grid points, and 
-    some flattened vector of hyperparameters for the list of covariance funcs """
-    Ks = self._kern.gram_list(hparams, self._grids)  # covariance mats for each dimension
-    Ls = [np.linalg.cholesky(K) for K in Ks]         # cholesky of each cov mat
-
-    #generate spatial component and bias 
-    z_spatial = kron_mat_vec_prod( Ls, np.random.randn(len(self._grid_counts)) )
-    z_bias    = np.sqrt(10)*np.random.randn()
-    return np.append(z_bias, z_spatial)
 
 
 if __name__=="__main__":

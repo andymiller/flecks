@@ -1,33 +1,88 @@
 import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.stats import gamma
-####################################################
-# Kernel classes 
-#   - MultiKronKernel: class that takes advantage of 
-#     kronecker structure in multi dimensional covariance matrices
-#     for optimized inverse, cholesky, multiplications, etc. 
-#     This class strings together multiple 1-d kernels
-#
-#   - Kernel and subclasses: implements simple covariance 
-#     functions for one-d kernels
-####################################################
+from kron_util import kron_mat_vec_prod
+
+"""
+Kernel objects: these are very Gaussian Process oriented kernels.  A 
+                Kernel object should have the following capabilities: 
+
+      0. init(prior_type, hyper_params): 
+        - initialize a certain type of kernel with a certain type of prior and 
+          initial hyper_params
+      1. K(pts, pts, hypers): 
+        - Return covariance matrix given two lists of points (each pair)
+      2. hypers(): 
+        - Return hyper parameters (or a sample from the prior), 
+          really anything that is the appropriate length 
+      3. hyper_prior_lnpdf(hparms): 
+        - log prior over hyper parameters passed 
+      4. gen_prior(hyper_parameters, grids, nu=None): 
+        - draws from prior at cartesian grid points defined
+          by grids.  This is useful when certain types of 
+          structures don't necessitate the instantiation of 
+          an entire Gram matrix over a huge set of points (which can 
+          be computationally prohibitive)
+      5. whiten_process(f, hypers, pts): 
+        - whitens the process passed in, using setting of hypers and 
+          process spatial locations
+        - unwhiten process is just self.gen_prior(hypers, pts, nu) 
+          where nu is the whitened process (which is equal in distribution
+          to a spherical normal draw).
+"""
+
+##TODO figure out how to make sure methods above are 
+##     implemented in all subclasses!
+class Kernel(object): 
+  """ simple model for a kernel - PSD function 
+  """
+  def __init__(self): 
+    pass
+
+  @staticmethod
+  def factory(kernel_name = "sqe"): 
+    return {
+      'sqe'  : SQEKernel(), 
+      'sqeu' : SQEKernelUnscaled(),
+      'sm'   : SpectralMixtureKernel(),
+      'kron' : MultiKronKernel()
+      }.get(kernel_name, SQEKernel())
+
+  def K(self, Xi, Xj, hypers=None): 
+    raise NotImplementedError
+
+  def hypers(self): 
+    raise NotImplementedError
+
+  def hyper_prior_lnpdf(self, hypers):
+    raise NotImplementedError
+
+  def gen_prior(self, hypers, pts, nu=None): 
+    """ return sample from prior - not optimized at all """
+    K = self.K(pts, pts, hypers)
+    return np.linalg.cholesky(K).dot(np.random.randn(len(pts)))
+
+  def whiten_process(self, f, hypers, pts): 
+    L = np.linalg.cholesky(self.K(pts, pts, hypers))
+    Linv = np.linalg.inv(L)
+    nu = Linv.dot(f)
+    return nu
 
 
-class MultiKronKernel: 
+class MultiKronKernel(Kernel): 
   """ maintains a list of kernels corresponding to each dimension. 
   This class assumes that the Kernel over the multi-dimensional space
   is a tensor product kernel, so it's Gram matrix can only be instantiated 
   over *regular grids* in each dimension.  This is ideal for a discretized 
   approximation to a space. """
-  
-  def __init__(self, kernel_names): 
+  def __init__(self, kernel_names=["sqeu", "sqeu"]): 
     self._scale = 1.
     self._kerns = []
     for kname in kernel_names:
-      self._kerns.append( Kernel.factory(kname) )
-    #self.set_hypers(hypers)
+      self._kerns.append( SQEKernelUnscaled()) # Kernel.factory(kname) )
+      #self._kerns.append( Kernel.factory(kname) )
   
-  def gram_list(self, hparams, grids): 
+  def _gram_list(self, hparams, grids): 
     """ generate a list of gram matrices, one for each dimension, 
     given the fixed grid """
     kern_hypers = self._chunk_hypers(hparams)
@@ -45,7 +100,7 @@ class MultiKronKernel:
     hparams = self._chunk_hypers(h)
     lls = 0
     for d in range(len(hparams)):
-      lls += self._kerns[d].prior_lnpdf(hparams[d])
+      lls += self._kerns[d].hyper_prior_lnpdf(hparams[d])
     return lls
 
   def hypers(self): 
@@ -72,32 +127,24 @@ class MultiKronKernel:
       startI = endI
     return kern_hypers
 
+  def gen_prior(self, hparams, grids, nu=None):
+    """ generate from the GP prior (with the object's grid points, and 
+    some flattened vector of hyperparameters for the list of covariance funcs """
+    Ks = self._gram_list(hparams, grids)  # covariance mats for each dimension
+    Ls = [np.linalg.cholesky(K) for K in Ks]         # cholesky of each cov mat
 
-#
-# collection of 1-d kernels to be used with LGCP 
-#
-class Kernel: 
-  """ simple model for a kernel - PSD function 
-  """
-  def __init__(self): 
-    pass
+    #generate spatial component and bias 
+    Nz = np.prod( [len(g) for g in grids] )
+    if nu is None: 
+      nu = np.random.randn(Nz)
+    return kron_mat_vec_prod(Ls, nu) 
 
-  @staticmethod
-  def factory(kernel_name = "sqe"): 
-    return {
-      'sqe'  : SQEKernel(), 
-      'sqeu' : SQEKernelUnscaled(),
-      'per'  : PerKernel(),
-      }.get(kernel_name, SQEKernel())
-
-  def K(self, Xi, Xj, hypers=None): 
-    raise NotImplementedError
-
-  def gram_mat(self, Xs):
-    raise NotImplementedError
-
-  def prior_lnpdf(self, hypers):
-    raise NotImplementedError
+  def whiten_process(self, f, hypers, grids): 
+    Ks = self._gram_list(hypers, grids)
+    Ls = [np.linalg.cholesky(K) for K in Ks]
+    Ls_inverse = [np.linalg.inv(L) for L in Ls]
+    nu = kron_mat_vec_prod(Ls_inverse, f)
+    return nu
 
 class SpectralMixtureKernel(Kernel):
   """ Simple, one-dimensional spectral mixture kernel.  The 
@@ -115,7 +162,7 @@ class SpectralMixtureKernel(Kernel):
     ws  = 1./num_comp * np.ones(num_comp)  # weights
     mus = np.arange(num_comp)              # means
     vs  = np.ones(num_comp)                # variances
-    self.set_hyper_params( np.append(ws, np.append(mus, vs)) )
+    self._set_hyper_params( np.append(ws, np.append(mus, vs)) )
 
   def K(self, Xi, Xj, hypers=None):
     assert len(Xi.shape)==len(Xj.shape) and len(Xi.shape)==1, "multi-dim not supported"
@@ -132,19 +179,18 @@ class SpectralMixtureKernel(Kernel):
       k += kq
     return k
 
-  def hyper_params(self):
+  def hypers(self):
     """ return flat vector of hyper parameters """
     return np.append( self._weights, np.append(self._means, self._vars) )
-
-  def set_hyper_params(self, hypers): 
+  
+  def hyper_prior_lnpdf(self, hypers): 
+    """ on mus, place fat tailed prior """
+    return -np.sum(np.log(self._vars))
+  
+  def _set_hyper_params(self, hypers): 
     """ pass in flat vector of hyper parameters """
     assert len(hypers) == self._num_comp*3, "SMKernel, num hypers not correct"
     self._weights, self._means, self._vars = np.split(hypers, 3)
-
-  def prior_lnpdf(self, hypers): 
-    """ constant jeffrey's/scale-free prior on length scales """
-    return -np.sum(np.log(hypers))
-
 
 
 class SQEKernelUnscaled(Kernel):
@@ -157,7 +203,7 @@ class SQEKernelUnscaled(Kernel):
     """ gram mat between Xi and Xj """
     if length_scale is not None:
       self._length_scale = length_scale
-    
+  
     # reshape to make sure they are stacks of vecs
     if len(Xi.shape) == 1:
       Xi = np.reshape( Xi, (-1, 1) )
@@ -165,18 +211,19 @@ class SQEKernelUnscaled(Kernel):
     dists = cdist(Xi, Xj, 'sqeuclidean')
     return np.exp( -(1./(2.*self._length_scale*self._length_scale)) * dists)
  
-  def hyper_params(self):
+  def hyper_params(self): 
     return np.array([self._length_scale])
 
-  def set_hyper_params(self, hypers):
-    self._length_scale = hypers[0]
-
-  def prior_lnpdf(self, hypers): 
+  def hyper_prior_lnpdf(self, hypers): 
     """ jeffrey's/scale-free prior on length scales """
     #return -np.sum(np.log(hypers))
     return np.sum(gamma(12, scale=.5).logpdf(hypers))
 
 
+##################################################
+# TODO implement parent class functions
+# for following kernels 
+#
 class SQEKernel(Kernel): 
   """ Simple squared exponential kernel (independent length scales)"""
   def __init__(self, length_scale=1, sigma2=1):
@@ -220,15 +267,6 @@ class SQEKernel(Kernel):
   def prior_lnpdf(self, hypers): 
     """ jeffrey's/scale-free prior on length scales """
     return -np.sum(np.log(hypers))
-
-class PerKernel(Kernel):
-  """ Periodic Kernel """
-  pass
-
-
-
-
-
 
 
 
