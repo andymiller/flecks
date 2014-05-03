@@ -26,11 +26,12 @@ def kron_mat_vec_prod(kron_pieces, b):
 
 def kron_multi(kron_pieces): 
   """ Takes a set of matrices and returns their kron product """
+  if len(kron_pieces) == 1:
+      return kron_pieces[0]
   A = kron_pieces[0]
   for Ad in kron_pieces[1:]:
       A = np.kron(A, Ad)
   return A
-
 
 def kron_inv(kron_pieces): 
   return [np.linalg.inv(A) for A in kron_pieces]

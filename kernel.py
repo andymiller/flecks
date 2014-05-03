@@ -85,9 +85,9 @@ class MultiKronKernel(Kernel):
   def _gram_list(self, hparams, grids): 
     """ generate a list of gram matrices, one for each dimension, 
     given the fixed grid """
-    kern_hypers = self._chunk_hypers(hparams)
+    scale, kern_hypers = self._chunk_hypers(hparams)
+    scale = scale ** (1./len(grids))
     Ks = []
-    scale = self._scale ** (1./len(grids))
     for d in range(len(self._kerns)):
         Kd = self._kerns[d].K( grids[d], grids[d], kern_hypers[d]) + \
                                np.diag(1e-8*np.ones(len(grids[d])) )
@@ -97,7 +97,7 @@ class MultiKronKernel(Kernel):
   def hyper_prior_lnpdf(self, h): 
     """ prior over hyper parameters for this kernel - 
     using scale invariant for now """
-    hparams = self._chunk_hypers(h)
+    scale, hparams = self._chunk_hypers(h)
     lls = 0
     for d in range(len(hparams)):
       lls += self._kerns[d].hyper_prior_lnpdf(hparams[d])
@@ -112,7 +112,8 @@ class MultiKronKernel(Kernel):
     return np.reshape(hypers, (-1,))
 
   def set_hypers(self, hypers):
-    kern_hypers = self._chunk_hypers(hypers)
+    scale, kern_hypers = self._chunk_hypers(hypers)
+    self._scale = scale
     for k in self._kerns:
       k.set_hyper_params(kern_hypers)
 
@@ -120,12 +121,13 @@ class MultiKronKernel(Kernel):
     """ separate out a flattened vector of hyperparameters to a 
     list of arrays of them (using kernel information) """
     kern_hypers = []
-    startI = 0
+    scale = hypers[0]
+    startI = 1
     for d in range(len(self._kerns)):
       endI = startI + len(self._kerns[d].hyper_params())
       kern_hypers.append( hypers[startI:endI] )
       startI = endI
-    return kern_hypers
+    return scale, kern_hypers
 
   def gen_prior(self, hparams, grids, nu=None):
     """ generate from the GP prior (with the object's grid points, and 
@@ -145,6 +147,7 @@ class MultiKronKernel(Kernel):
     Ls_inverse = [np.linalg.inv(L) for L in Ls]
     nu = kron_mat_vec_prod(Ls_inverse, f)
     return nu
+
 
 class SpectralMixtureKernel(Kernel):
   """ Simple, one-dimensional spectral mixture kernel.  The 
@@ -167,14 +170,14 @@ class SpectralMixtureKernel(Kernel):
   def K(self, Xi, Xj, hypers=None):
     assert len(Xi.shape)==len(Xj.shape) and len(Xi.shape)==1, "multi-dim not supported"
     if hypers is not None:
-      self.set_hyper_params( hypers )
+      self._set_hyper_params( hypers )
 
     #pairwise dists
     tau = np.subtract.outer(Xi, Xj)
-    k = np.zeros( tau.shape )
+    k   = np.zeros( tau.shape )
     for q in range(self._num_comp): 
       kq = np.exp(-2.*np.pi*np.pi * tau*tau * self._vars[q]) * \
-           np.cos( 2.*np.pi * tau * self._means[q] )
+           np.cos( 2.*np.pi*tau * self._means[q] )
       kq *= self._weights[q]
       k += kq
     return k
@@ -209,7 +212,7 @@ class SQEKernelUnscaled(Kernel):
       Xi = np.reshape( Xi, (-1, 1) )
       Xj = np.reshape( Xj, (-1, 1) )
     dists = cdist(Xi, Xj, 'sqeuclidean')
-    return np.exp( -(1./(2.*self._length_scale*self._length_scale)) * dists)
+    return np.exp(-.5*dists/(self._length_scale*self._length_scale))
  
   def hyper_params(self): 
     return np.array([self._length_scale])

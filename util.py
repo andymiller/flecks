@@ -37,6 +37,10 @@ def nd_grid_points( dim_points ):
     else: 
       raise NotImplementedError
 
+def ndmesh(grids):
+   # args = map(np.asarray,args)
+   return np.broadcast_arrays(*[x[(slice(None),)+(None,)*i] for i, x in enumerate(grids)]) 
+
 def spherical_proposal(theta, scale=.05): 
   """ jitters theta with spherical gaussian noise """
   thp = theta + scale*np.random.randn(len(theta))
