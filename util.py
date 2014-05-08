@@ -41,6 +41,19 @@ def ndmesh(grids):
    # args = map(np.asarray,args)
    return np.broadcast_arrays(*[x[(slice(None),)+(None,)*i] for i, x in enumerate(grids)]) 
 
+def mvnorm_lnpdf(x, mean=0, cov=None): 
+  """ simple log multivariate normal pdf """
+  #number of samples and dimensionality of samples
+  if len(x.shape)==1:
+    N = 1
+    D = len(x)
+  else: 
+    N,D = x.shape
+  invCov = np.linalg.inv(cov)
+  (sign, ldCov) = np.linalg.slogdet(cov)
+  lls = -.5*D*np.log(2*np.pi) -.5*ldCov -.5 * (x-mean).T.dot(invCov).dot(x-mean)
+  return lls
+
 def spherical_proposal(theta, scale=.05): 
   """ jitters theta with spherical gaussian noise """
   thp = theta + scale*np.random.randn(len(theta))

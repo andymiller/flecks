@@ -1,7 +1,7 @@
 import numpy as np
 #from lgcp import LGCP
 from pproc import DiscretizedPointProcess
-from ess import elliptical_slice
+from mcmc.ess import elliptical_slice
 from util import  whitened_mh, spherical_proposal
 from kernel import MultiKronKernel
 from kron_util import kron_mat_vec_prod
@@ -37,10 +37,10 @@ class MixLGCP(DiscretizedPointProcess):
     self._K = K
 
     #sanity check hack
-    self._fixed_basis = np.loadtxt('/Users/acm/Code/xyhoops/andyfranks/pyscripts/nmf_basis_rank_6.txt').T
+    #self._fixed_basis = np.loadtxt('/Users/acm/Code/xyhoops/andyfranks/pyscripts/nmf_basis_rank_6.txt').T
   
-  def _log_like(self, th): 
-    """ approximate log like is just independent poissons """
+  def _unravel_params(self, th):
+    """ take flat vector and produce basis and weight matrices """
     #compute positive normalized basis 
     th_zs     = th[0:self._K*self._Nz]
     zs        = th_zs.reshape((self._K, self._Nz))
@@ -52,16 +52,17 @@ class MixLGCP(DiscretizedPointProcess):
     #make weights positive 
     th_ws = th[self._K*self._Nz:]
     ws = np.exp(th_ws.reshape((self._Nw, self._K)))
+    return Bs, ws
 
+  def _log_like(self, th): 
+    """ approximate log like is just independent poissons """
     #compute the intensity for each point process
+    Bs, ws = self._unravel_params(th)
     lams = ws.dot(Bs)
 
-    #sum likelihood contributions 
-    ll = 0
-    for i in range(self._Nw): 
-      #pr(x | lam) = lam^x * exp(-lam) / x!
-      loglam = np.log(lams[i])
-      ll += np.sum(loglam * self._pprocs[i]._grid_counts - lams[i])  # log-like
+    #compute log probs: pr(x | lam) = lam^x * exp(-lam) / x!
+    loglam_all = np.log(lams)
+    ll = np.sum( loglam_all*self._grid_counts - lams )
     return ll
 
   def fit(self, data, Nsamps=2000, prop_scale=1, \
@@ -77,6 +78,7 @@ class MixLGCP(DiscretizedPointProcess):
 
     #grab grids from one of the pprocs (they are all the same)
     self._grids = self._pprocs[0]._grids
+    self._grid_counts = np.array([pproc._grid_counts for pproc in self._pprocs])
 
     # number of latent z's to sample (including bias term) for each basis
     self._Nz = len(self._pprocs[0]._grid_counts) + 1
@@ -166,29 +168,15 @@ class MixLGCP(DiscretizedPointProcess):
     lamvec = self._cell_vol * np.exp(zvecs).var(axis=0)
     return np.reshape(lamvec, self._grid_dim, order='C')
 
-
   def plot_basis_from_samp(self, th):
     """  approximate log like is just independent poissons """
     #compute positive normalized basis 
-    th_zs     = th[0:self._K*self._Nz]
-    zs        = th_zs.reshape((self._K, self._Nz))
-    logBs     = (zs[:,0] + zs[:,1:].T).T
-    Bs_unnorm = self._cell_vol * np.exp(logBs) 
-    row_sums  = Bs_unnorm.sum(axis=1)
-    Bs        = Bs_unnorm / row_sums[:,np.newaxis]
-    print Bs.shape
-
-    f, axarr = plt.subplots(1, self._K)
+    Bs, ws = self._unravel_params(th)
+    f, axarr = plt.subplots(self._K,1)
     for k in range(self._K):
-      axarr[k].imshow(Bs[k].reshape(self._grid_dim))
-    plt.show()
-
-    #make weights positive 
-    #th_ws = th[self._K*self._Nz:]
-    #ws = np.exp(th_ws.reshape((self._Nw, self._K)))
-
-
-
+      axarr[k].imshow( Bs[k].reshape(self._grid_dim).T, 
+                       extent=self._bbox[0]+self._bbox[1] )
+    return f, axarr
   
 if __name__=="__main__":
 
@@ -214,7 +202,7 @@ if __name__=="__main__":
 
   #fit on small samp
   model = MixLGCP(dim=2, grid_dim=(47,50), bbox=[(0,47), (0,50)])
-  th_samps, h_samps, lls = model.fit(player_shots, Nsamps=50, burnin=2, num_ess=2)
+  th_samps, h_samps, lls = model.fit(player_shots, Nsamps=20, burnin=2, num_ess=2)
   plt.plot(lls)
   plt.show()
 

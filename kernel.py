@@ -108,7 +108,7 @@ class MultiKronKernel(Kernel):
     as a vector """
     hypers = [self._scale]
     for k in self._kerns: 
-        hypers.append( k.hyper_params() )
+        hypers.append( k.hypers() )
     return np.reshape(hypers, (-1,))
 
   def set_hypers(self, hypers):
@@ -124,7 +124,7 @@ class MultiKronKernel(Kernel):
     scale = hypers[0]
     startI = 1
     for d in range(len(self._kerns)):
-      endI = startI + len(self._kerns[d].hyper_params())
+      endI = startI + len(self._kerns[d].hypers())
       kern_hypers.append( hypers[startI:endI] )
       startI = endI
     return scale, kern_hypers
@@ -188,6 +188,7 @@ class SpectralMixtureKernel(Kernel):
   
   def hyper_prior_lnpdf(self, hypers): 
     """ on mus, place fat tailed prior """
+    self._weights, self._means, self._vars = np.split(hypers, 3)
     return -np.sum(np.log(self._vars))
   
   def _set_hyper_params(self, hypers): 
@@ -214,7 +215,7 @@ class SQEKernelUnscaled(Kernel):
     dists = cdist(Xi, Xj, 'sqeuclidean')
     return np.exp(-.5*dists/(self._length_scale*self._length_scale))
  
-  def hyper_params(self): 
+  def hypers(self): 
     return np.array([self._length_scale])
 
   def hyper_prior_lnpdf(self, hypers): 
