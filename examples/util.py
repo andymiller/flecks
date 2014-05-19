@@ -20,7 +20,7 @@ def gen_synthetic_data(xdim = 1, K=2,
         def bump(x, mu):
             return 1.0/np.sqrt(2*np.pi) * np.exp( -.5*(x - mu)*(x-mu) ) 
         def wfunc(t, omega): 
-            return np.sin(t*omega) + 75
+            return 50*np.sin(t*omega) + 75
         
         #create spatial basis location of the bumps
         mus = np.array([ -5, 2])
@@ -46,16 +46,21 @@ def gen_synthetic_data(xdim = 1, K=2,
             return lam_xt
         def lam2(t, x0, x1): 
             return quad(lam, x0, x1, args=(t,mus,omegas,))[0]
-        vol = quad(lam2, -10, 10, args=(0, 20))[0] #total volume in bbox 
-        print "total volume: ", vol
+        vol = quad(lam2, xbbox[0][0], xbbox[0][1], args=(tbbox[0],tbbox[1]))[0] #total volume in bbox 
         N = np.random.poisson(lam=vol)
-        X,T = np.meshgrid(xgrid, tgrid)
-        Z   = lam(X, T, mus, omegas)
+        print "total volume: ", vol
         print "num points sampled: ", N
-        normZ = Z / Z.sum()
-        samp_idx = np.random.choice(Z.size, size=N, p=normZ.flatten())
-        x = (X.flat)[samp_idx] + .05*np.random.randn(len(samp_idx))
-        t = (T.flat)[samp_idx] + .05*np.random.randn(len(samp_idx))   
+        X,T = np.meshgrid(xgrid, tgrid, indexing='ij')
+        Z   = lam(X, T, mus, omegas)
+ 
+        #generate data from discretized intensity (directly)
+        dx = float(xbbox[0][1] - xbbox[0][0])/xgrid_dims[0]
+        dt = float(tbbox[1] - tbbox[0])/tgrid_dims[0]
+        Lambda  = B_gt.T.dot(W_gt) * dx * dt #intensity is outer prod of B and W
+        normLam = Lambda / Lambda.sum()
+        samp_idx = np.random.choice(normLam.size, size=N, p=normLam.ravel(order="C"))
+        x = (X.ravel(order="C"))[samp_idx] + .25*dx*np.random.randn(len(samp_idx))
+        t = (T.ravel(order="C"))[samp_idx] + .25*dt*np.random.randn(len(samp_idx))   
         return np.column_stack((x,t)), B_gt, W_gt, xgrid, tgrid, X, T, Z
     else: 
         raise NotImplementedError, 'Synthetic x dim greater than 1 not implemented'

@@ -41,6 +41,33 @@ def ndmesh(grids):
    # args = map(np.asarray,args)
    return np.broadcast_arrays(*[x[(slice(None),)+(None,)*i] for i, x in enumerate(grids)]) 
 
+def normalize_rows(A):
+  """ makes rows of a matrix sum to one """
+  row_sums = A.sum(axis=1)
+  return A / row_sums[:,np.newaxis]
+
+def resample_assignments(W, B, grid_counts, z_curr):
+  """ W is a K by Nplayer matrix of weights (per player)
+      B is the K by Vtiles matrix of (positive) bases 
+      grid_counts is the Nplayer by V matrix of counts 
+      z_curr is the Nplayer by V tile by K 3D array of current assignments
+  """
+  K = W.shape[0]
+  N = W.shape[1]
+  V = B.shape[1]
+  for n in range(N): 
+      #Lam_n = normalize_rows(W[:,n]*B.T)
+      for v in range(V):
+          N_nv = grid_counts[n,v]
+          if N_nv > 0: 
+              Lam  = W[:,n]*B[:,v]
+              Lam  = Lam / Lam.sum()
+              #print Lam, Lam_n[v]
+              z_curr[n,v,:] = np.random.multinomial(N_nv, Lam, size=1)[0]
+          else: 
+              z_curr[n,v,:] = np.zeros(K)
+  return z_curr
+
 def mvnorm_lnpdf(x, mean=0, cov=None): 
   """ simple log multivariate normal pdf """
   #number of samples and dimensionality of samples
@@ -53,61 +80,6 @@ def mvnorm_lnpdf(x, mean=0, cov=None):
   (sign, ldCov) = np.linalg.slogdet(cov)
   lls = -.5*D*np.log(2*np.pi) -.5*ldCov -.5 * (x-mean).T.dot(invCov).dot(x-mean)
   return lls
-
-def spherical_proposal(theta, scale=.05): 
-  """ jitters theta with spherical gaussian noise """
-  thp = theta + scale*np.random.randn(len(theta))
-  if np.any(thp < 0): 
-    return None
-  else: 
-    return thp
-
-def whitened_mh(th, f, whiten, unwhiten, Lfn, ln_prior, \
-                prop_dist=spherical_proposal): 
-  """ returns a sample of theta (cov funciont hyper parameters
-  given the state of the MVN f.  It first whitens f into nu, 
-  leaving that fixed for a higher acceptance rate
-  
-  INPUT: 
-    - th      : current state of the cov func hyperparams
-    - f       : current state of the latent gaussian proc/vars
-    - whiten  : function takes in (th, f) to find whitened version of f
-                e.g. K_th = Cov_Func(th, x)
-                     L_th = chol(K_th)
-                     nu   = inv(L_th) * f
-                user specified, so this can be optimized version can be passed in
-    - unwhiten: function takes in (th_p, nu) and computes unwhitened version of nu
-                e.g. K_thp = Cov_Func(th_p, nu)
-                     L_thp = chol(K_thp)
-                     fp    = L_thp * nu
-                again, it's user specified so optimized versions can be passed in
-    - Lfn     : likelihood function, func of f
-    - prop_dist: proposal distribution for th (function of curr th)
-
-  OUTPUT: 
-    - th-new  : new covariance kernel parameters
-    - f-new   : new version of the multivariate normal 
-  """
-  
-  # solve for nu ~ Normal(0, I)      (whiten)
-  nu = whiten(th, f)  #whitening function incorporates Covariance 
-                      #function (but optimized to handle kronecker stuff)
-
-  # propose th' ~ q(th' ; th)
-  thp = prop_dist(th)
-  if thp is None: 
-    return th, f, False, Lfn(f) + ln_prior(th)
-  
-  # compute implied values f' = L_thp*nu (unwhiten)
-  fp = unwhiten(thp, nu)
-  
-  # mh accept/reject
-  ll_p = Lfn(fp) + ln_prior(thp)
-  ll_o = Lfn(f) + ln_prior(th)
-  if -np.random.exponential() < ll_p - ll_o:
-    return thp, fp, True, ll_p
-  else:
-    return th, f, False, ll_o
 
 
 ############################################################

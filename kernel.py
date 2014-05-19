@@ -45,7 +45,8 @@ class Kernel(object):
       'sqe'  : SQEKernel(), 
       'sqeu' : SQEKernelUnscaled(),
       'sm'   : SpectralMixtureKernel(),
-      'kron' : MultiKronKernel()
+      'kron' : MultiKronKernel(), 
+      'per'  : PerKernel()
       }.get(kernel_name, SQEKernel())
 
   def K(self, Xi, Xj, hypers=None): 
@@ -59,13 +60,16 @@ class Kernel(object):
 
   def gen_prior(self, hypers, pts, nu=None): 
     """ return sample from prior - not optimized at all """
-    K = self.K(pts, pts, hypers)
-    return np.linalg.cholesky(K).dot(np.random.randn(len(pts)))
+    L = np.linalg.cholesky(self.K(pts, pts, hypers) + np.eye(len(pts))*1e-8)
+    if nu is None: 
+      nu = np.random.randn(len(pts))
+    return L.dot(nu)
 
   def whiten_process(self, f, hypers, pts): 
-    L = np.linalg.cholesky(self.K(pts, pts, hypers))
+    L = np.linalg.cholesky( self.K(pts, pts, hypers) + 1e-8*np.eye(len(pts)) )
     Linv = np.linalg.inv(L)
     nu = Linv.dot(f)
+    #print "Nu, should look normal, 0, 1", nu
     return nu
 
 
@@ -223,6 +227,36 @@ class SQEKernelUnscaled(Kernel):
     #return -np.sum(np.log(hypers))
     return np.sum(gamma(12, scale=.5).logpdf(hypers))
 
+class PerKernel(Kernel):
+  """ Periodic kernel """
+  def __init__(self, scale=5., per=5., length_scale=10.): 
+    self._set_hypers([per, length_scale, scale])
+  
+  def _set_hypers(self, hypers=[5., 5., 10.]):
+    self._scale, self._per, self._length_scale = hypers
+
+  def K(self, Xi, Xj, hypers=None):
+    if hypers is not None:
+      self._set_hypers(hypers)
+    
+    if len(Xi.shape)==1:
+      Xi = np.reshape(Xi, (-1,1))
+      Xj = np.reshape(Xj, (-1,1))
+
+    dists    = cdist(Xi, Xj, 'euclidean')
+    sin_term = np.sin(np.pi*np.abs(dists)/self._per)  
+    l2       = self._length_scale*self._length_scale
+    s2       = self._scale * self._scale
+    return s2 * np.exp( -2. * sin_term*sin_term / l2 )
+
+  def hypers(self):
+    return np.array([self._scale, self._per, self._length_scale])
+
+  def hyper_prior_lnpdf(self, hypers):
+    return np.sum( 1./hypers )
+  
+  def hyper_names(self):
+    return ["Scale", "Period", "Length Scale"]
 
 ##################################################
 # TODO implement parent class functions

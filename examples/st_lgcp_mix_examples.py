@@ -9,9 +9,9 @@ def st_lgcp_mix_examples_1d():
     # example parameters and sythetic data
     xdim = 1
     K    = 2
-    xgrid_dims = [50]
+    xgrid_dims = [40]
     xbbox      = [[-10,10]]
-    tgrid_dims = [50]
+    tgrid_dims = [60]
     tbbox      = [0,20]
     data, B_gt, W_gt, xgrid, tgrid, X, T, Z = \
         gen_synthetic_data( xdim = xdim, K=K,
@@ -21,16 +21,16 @@ def st_lgcp_mix_examples_1d():
                             tbbox = tbbox )
 
     #visualize 
-    fig, axarr = plt.subplots(3,1)
-    axarr[0].plot(xgrid, B_gt.T) 
-    axarr[0].set_title("spatial bumps")
-    axarr[0].set_xlabel('X space')
-    axarr[1].set_xlim((-10,10))
+    fig, axarr = plt.subplots(3,2)
+    axarr[0,0].plot(xgrid, B_gt.T) 
+    axarr[0,0].set_title("spatial bumps")
+    axarr[0,0].set_xlabel('X space')
+    axarr[0,0].set_xlim((-10,10))
 
-    axarr[1].plot(tgrid, W_gt.T) 
-    axarr[1].set_title("temporal weights")
-    axarr[1].set_ylabel('T space')
-    axarr[1].set_xlim((0,20))
+    axarr[1,0].plot(tgrid, W_gt.T) 
+    axarr[1,0].set_title("temporal weights")
+    axarr[1,0].set_ylabel('T space')
+    axarr[1,0].set_xlim((0,20))
 
     # `ax` is a 3D-aware axis instance because of the projection='3d' keyword argument to add_subplot
     #fig = plt.figure(figsize=(14,6))
@@ -41,19 +41,21 @@ def st_lgcp_mix_examples_1d():
     #cb = fig.colorbar(p, shrink=0.5)
     #plt.show()
 
-    axarr[2].scatter(data[:,0], data[:,1], marker='.')
-    axarr[2].set_title("observed point process")
-    axarr[2].set_xlabel('X space')
-    axarr[2].set_ylabel("TIME")
-    axarr[2].set_xlim((-10,10))
+    axarr[2,0].scatter(data[:,0], data[:,1], marker='.')
+    axarr[2,0].set_title("observed point process")
+    axarr[2,0].set_xlabel('X space')
+    axarr[2,0].set_ylabel("TIME")
+    axarr[2,0].set_xlim((-10,10))
+    axarr[2,0].set_ylim((0,20))
     fig.tight_layout()
-    #plt.show()
 
+    #
     # fit model
+    #
     K = 2
     dim = 1
-    xgrid_dims = [50]  # downsample space and time
-    tgrid_dims = [50]  
+    xgrid_dims = [40]  # downsample space and time
+    tgrid_dims = [60]  
     model = SpatioTemporalMixLGCP( xdim       = xdim, 
                                    K          = K,
                                    xgrid_dims = xgrid_dims, 
@@ -62,17 +64,22 @@ def st_lgcp_mix_examples_1d():
                                    tbbox      = tbbox )
 
     model.describe()
-    th_samps, h_samps, lls = model.fit(data, Nsamps=20)
-    #model.plot_basis_from_samp(th_samps[-1])
-    #model.plot_weights_from_samp(th_samps[-1])
-    #f = plt.figure()
-    #plt.plot(lls[-100:])
+    w_samps, b_samps, th_samps, lls = model.fit(data, Nsamps=1000)
+    max_idx = lls.argmax()
+    model.plot_basis_from_samp(b_samps[max_idx], axarr[0,1])
+    model.plot_weights_from_samp(w_samps[max_idx], axarr[1,1])
+    f = plt.figure()
+    plt.plot(lls)
     #plt.show()
-    # examine fit
 
+    # plot Temporal Hyper parameter traces
+    model.plot_time_hypers()
+    plt.show()
+
+    # examine fit
     #sanity check
     #create ground truth basis/weights 
-    Lambda = B_gt.T.dot(W_gt)
+    Lambda = B_gt.T.dot(W_gt) * model._cell_vol    #V by T matrix
     ll_gt = np.sum(model._grid_obs*np.log(Lambda) - Lambda )
 
     #Beta_gt_biased = np.log(B_gt)
@@ -83,7 +90,7 @@ def st_lgcp_mix_examples_1d():
     #Omega_gt = np.column_stack((Omega_gt_0, (Omega_gt_biased.T-Omega_gt_0).T))
     #th_gt = np.concatenate( (Beta_gt.ravel(), Omega_gt.ravel()) ) 
     print "Ground truth loglike: ", ll_gt #model._log_like(th_gt)
-    print "sample max logliek: ", lls.max()
+    print "sample max loglike: ", lls.max()
 
 if __name__=="__main__":
     st_lgcp_mix_examples_1d()
