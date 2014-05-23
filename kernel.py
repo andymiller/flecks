@@ -295,8 +295,11 @@ class PerKernel(Kernel):
 
 class PerKernelUnscaled(PerKernel):
   """ Periodic kernel without the scale parameter """
-  def __init__(self, fixed_scale=1., per=5., length_scale=10.):
+  def __init__(self, fixed_scale=1., per=5., length_scale=10., min_per=1):
     self._fixed_scale = fixed_scale
+    self._min_per     = min_per             #fix a minimum period to fix aliasing effects 
+                                            #(tiny, periods=high frequencies which can 
+                                            # look like lower frequencies/bigger periods with weird jaggies
     self._set_hypers([per, length_scale])
 
   def _set_hypers(self, hypers=[5.,10.]):
@@ -308,7 +311,7 @@ class PerKernelUnscaled(PerKernel):
 
   def hyper_prior_lnpdf(self, hypers):
     self._set_hypers(hypers)
-    ll_per    = gamma(2, scale=.5).logpdf(self._per)
+    ll_per    = gamma(2, scale=.5).logpdf(self._per - self._min_per)  #min shifted
     ll_lscale = gamma(2, scale=.5).logpdf(self._length_scale)
     return ll_per+ll_lscale
   

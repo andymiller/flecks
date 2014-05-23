@@ -138,6 +138,86 @@ class SpatioTemporalMixLGCP(DiscretizedPointProcess):
       Zbasis = z_curr.sum(axis=0).T  #all shots from each basis
 
       ##
+      ## Sample Basis surfaces given weights and Z values
+      ##
+      ## sample latent surface (multiple runs of ESS)
+      W = self._omega_to_weight(w_curr)  
+      xh_mat = xh_curr.reshape((self._K, self._Nxhypers)) #unpack space hypers
+      b_mat  = b_curr.reshape((self._K, self._V+1))        #unpack basis samp
+      for k in range(self._K):
+        def basis_log_like(beta):
+            Bk   = self._single_beta_to_basis(beta)
+            lams = W[k,:].sum()*Bk * (self._dt*self._dx)
+            loglam = np.log(lams)
+            ll = np.sum(loglam*Zbasis[k] - lams)
+            return ll
+        nreps = 100 if i<10 else 20
+        for ii in range(nreps):
+          beta_samp = self._xkern.gen_prior(xh_mat[k], self._grids[0:-1])
+          prior_b = np.concatenate(([np.sqrt(10)*randn()], beta_samp))
+          b_mat[k], log_lik = elliptical_slice( initial_theta = b_mat[k], \
+                                                prior         = prior_b, \
+                                                lnpdf         = basis_log_like )
+      b_curr = b_mat.ravel()
+      b_samps[i] = b_curr
+      #DEBUG examine loglike
+      #post_b_ll = self._log_like(w_curr, b_curr)
+      #print "    post B sample log like diff: ", post_b_ll - ll_curr
+      #ll_curr = post_b_ll
+
+      ##
+      ## Sample spatial cov function hyper parameters
+      ## 
+      # whitens/unwhitens 
+      W = self._omega_to_weight(w_curr)  
+      b_mat  = b_curr.reshape((self._K, self._V+1))       #unpack time samp
+      for k in range(self._K):
+        #whiten spatial process Bk
+        nu  = self._xkern.whiten_process(b_mat[k,1:], xh_curr[k,:], self._grids[0:-1])
+        def whitened_spatial_log_like(th):
+          ll_prior = self._xkern.hyper_prior_lnpdf(th)
+          if ll_prior < -1e50:
+            return -np.inf
+          beta = np.append(b_mat[k,0], self._xkern.gen_prior(th, self._grids[0:-1], nu=nu))
+          Bk   = self._single_beta_to_basis(beta)
+          lams = W[k,:].sum()*Bk * (self._dt*self._dx)
+          ll = np.sum(np.log(lams)*Zbasis[k] - lams)  
+          return ll+ll_prior
+        xh_curr[k,:] = slice_sample(xh_curr[k,:], whitened_spatial_log_like)
+        b_mat[k,1:]  = self._xkern.gen_prior(xh_curr[k,:], self._grids[0:-1], nu=nu)
+      xh_samps[i] = xh_curr
+      b_curr = b_mat.ravel()
+      #DEBUG examine post sample loglike
+      #post_xh_ll = self._log_like(w_curr, b_curr)
+      #print "    post xhyper sample log like diff: ", post_xh_ll - ll_curr
+      #ll_curr = post_xh_ll
+
+      ##
+      ## sample W values (ESS, not conjugate anymore)
+      ##
+      #th_mat = th_curr.reshape((self._K, self._Nthypers)) #unpack time hypers
+      w_mat  = w_curr.reshape((self._K, self._T+1))       #unpack time samp
+      for k in range(self._K):
+        def weight_log_like(omega): 
+            logW = omega[0] + omega[1:] + np.log(self._dt) #scaled by dt
+            return np.sum( logW*Ztime[k] - np.exp(logW) )  #independent poisson 
+        Kmat = self._tkern.K(self._grids[-1], self._grids[-1], hypers=th_curr[k])
+        L = np.linalg.cholesky(Kmat + 1e-8*np.eye(len(self._grids[-1])))
+        for ii in range(50):
+          #omega_samp = self._tkern.gen_prior(th_curr[k], self._grids[-1])
+          omega_samp = L.dot(np.random.randn(len(self._grids[-1])))
+          prior_w = np.concatenate(([3.16*randn()], omega_samp))
+          w_mat[k], log_lik = elliptical_slice( initial_theta = w_mat[k],
+                                                prior         = prior_w,
+                                                lnpdf         = weight_log_like )
+      w_curr = w_mat.ravel()
+      w_samps[i] = w_curr
+      #DEBUG examine loglike
+      #post_w_ll = self._log_like(w_curr, b_curr)
+      #print "    post W sample log like diff: ", post_w_ll - ll_curr
+      #ll_curr = post_w_ll
+
+      ##
       ## Sample TEMPORAL cov function hyper parameters
       ## 
       w_mat  = w_curr.reshape((self._K, self._T+1))       #unpack time samp
@@ -179,84 +259,6 @@ class SpatioTemporalMixLGCP(DiscretizedPointProcess):
       #post_th_ll = self._log_like(w_curr, b_curr)
       #print "    post th sample log like diff: ", post_th_ll - ll_curr
       #ll_curr = post_th_ll
-
-      ##
-      ## sample W values (ESS, not conjugate anymore)
-      ##
-      #th_mat = th_curr.reshape((self._K, self._Nthypers)) #unpack time hypers
-      w_mat  = w_curr.reshape((self._K, self._T+1))       #unpack time samp
-      for k in range(self._K):
-        def weight_log_like(omega): 
-            logW = omega[0] + omega[1:] + np.log(self._dt) #scaled by dt
-            return np.sum( logW*Ztime[k] - np.exp(logW) )  #independent poisson 
-        Kmat = self._tkern.K(self._grids[-1], self._grids[-1], hypers=th_curr[k])
-        L = np.linalg.cholesky(Kmat + 1e-8*np.eye(len(self._grids[-1])))
-        for ii in range(50):
-          #omega_samp = self._tkern.gen_prior(th_curr[k], self._grids[-1])
-          omega_samp = L.dot(np.random.randn(len(self._grids[-1])))
-          prior_w = np.concatenate(([3.16*randn()], omega_samp))
-          w_mat[k], log_lik = elliptical_slice( initial_theta = w_mat[k],
-                                                prior         = prior_w,
-                                                lnpdf         = weight_log_like )
-      w_curr = w_mat.ravel()
-      w_samps[i] = w_curr
-      #DEBUG examine loglike
-      #post_w_ll = self._log_like(w_curr, b_curr)
-      #print "    post W sample log like diff: ", post_w_ll - ll_curr
-      #ll_curr = post_w_ll
-
-      ##
-      ## Sample spatial cov function hyper parameters
-      ## 
-      # whitens/unwhitens 
-      W = self._omega_to_weight(w_curr)  
-      b_mat  = b_curr.reshape((self._K, self._V+1))       #unpack time samp
-      for k in range(self._K):
-        #whiten spatial process Bk
-        nu  = self._xkern.whiten_process(b_mat[k,1:], xh_curr[k,:], self._grids[0:-1])
-        def whitened_spatial_log_like(th):
-          ll_prior = self._xkern.hyper_prior_lnpdf(th)
-          if ll_prior < -1e50:
-            return -np.inf
-          beta = np.append(b_mat[k,0], self._xkern.gen_prior(th, self._grids[0:-1], nu=nu))
-          Bk   = self._single_beta_to_basis(beta)
-          lams = W[k,:].sum()*Bk * (self._dt*self._dx)
-          ll = np.sum(np.log(lams)*Zbasis[k] - lams)  
-          return ll+ll_prior
-        xh_curr[k,:] = slice_sample(xh_curr[k,:], whitened_spatial_log_like)
-        b_mat[k,1:]  = self._xkern.gen_prior(xh_curr[k,:], self._grids[0:-1], nu=nu)
-      xh_samps[i] = xh_curr
-      b_curr = b_mat.ravel()
-      #DEBUG examine post sample loglike
-      post_xh_ll = self._log_like(w_curr, b_curr)
-      print "    post xhyper sample log like diff: ", post_xh_ll - ll_curr
-      ll_curr = post_xh_ll
-
-      ##
-      ## Sample ESS surface given weights and Z values
-      ##
-      ## sample latent surface (multiple runs of ESS)
-      xh_mat = xh_curr.reshape((self._K, self._Nxhypers)) #unpack space hypers
-      b_mat  = b_curr.reshape((self._K, self._V+1))        #unpack basis samp
-      for k in range(self._K):
-        def basis_log_like(beta):
-            Bk   = self._single_beta_to_basis(beta)
-            lams = W[k,:].sum()*Bk * (self._dt*self._dx)
-            loglam = np.log(lams)
-            ll = np.sum(loglam*Zbasis[k] - lams)
-            return ll
-        for ii in range(30):
-          beta_samp = self._xkern.gen_prior(xh_mat[k], self._grids[0:-1])
-          prior_b = np.concatenate(([np.sqrt(10)*randn()], beta_samp))
-          b_mat[k], log_lik = elliptical_slice( initial_theta = b_mat[k], \
-                                                prior         = prior_b, \
-                                                lnpdf         = basis_log_like )
-      b_curr = b_mat.ravel()
-      b_samps[i] = b_curr
-      #DEBUG examine loglike
-      #post_b_ll = self._log_like(w_curr, b_curr)
-      #print "    post B sample log like diff: ", post_b_ll - ll_curr
-      #ll_curr = post_b_ll
 
       ##
       ## compute log like
