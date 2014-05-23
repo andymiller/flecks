@@ -18,9 +18,11 @@ def gen_synthetic_data(xdim = 1, K=2,
     if xdim==1:
         # Spatial bump and sinusoidal Wfunc 
         def bump(x, mu):
-            return 1.0/np.sqrt(2*np.pi) * np.exp( -.5*(x - mu)*(x-mu) ) 
-        def wfunc(t, omega): 
-            return 50*np.sin(t*omega) + 75
+            n1 = 1.0/np.sqrt(2*np.pi) * np.exp( -.5*(x - mu)*(x-mu) ) 
+            n2 = 1.0/np.sqrt(2*np.pi*.5) * np.exp( -(x-mu+3)*(x-mu+3))
+            return .6*n1 + .4*n2
+        def wfunc(t, per): 
+            return 30*np.sin(2*np.pi*t/per) + 50
         
         #create spatial basis location of the bumps
         mus = np.array([ -5, 2])
@@ -28,7 +30,7 @@ def gen_synthetic_data(xdim = 1, K=2,
         B_gt  = np.array([bump(xgrid, mu) for mu in mus])
 
         #create temporal weights
-        omegas = np.array([.6, 1.5])
+        omegas = np.array([10, 5])
         tgrid = np.linspace(tbbox[0], tbbox[1], tgrid_dims[0])
         W_gt = np.array([wfunc(tgrid, omega) for omega in omegas])
         
@@ -46,7 +48,13 @@ def gen_synthetic_data(xdim = 1, K=2,
             return lam_xt
         def lam2(t, x0, x1): 
             return quad(lam, x0, x1, args=(t,mus,omegas,))[0]
-        vol = quad(lam2, xbbox[0][0], xbbox[0][1], args=(tbbox[0],tbbox[1]))[0] #total volume in bbox 
+
+        # compute volume of product function
+        dx = float(xbbox[0][1] - xbbox[0][0])/xgrid_dims[0]
+        dt = float(tbbox[1] - tbbox[0])/tgrid_dims[0]
+        vol = np.sum(B_gt.T.dot(W_gt)*dx*dt)
+
+        #vol = quad(lam2, xbbox[0][0], xbbox[0][1], args=(tbbox[0],tbbox[1]))[0] #total volume in bbox 
         N = np.random.poisson(lam=vol)
         print "total volume: ", vol
         print "num points sampled: ", N
@@ -54,9 +62,8 @@ def gen_synthetic_data(xdim = 1, K=2,
         Z   = lam(X, T, mus, omegas)
  
         #generate data from discretized intensity (directly)
-        dx = float(xbbox[0][1] - xbbox[0][0])/xgrid_dims[0]
-        dt = float(tbbox[1] - tbbox[0])/tgrid_dims[0]
         Lambda  = B_gt.T.dot(W_gt) * dx * dt #intensity is outer prod of B and W
+        print "... gen data volume 2: ", np.sum(Lambda)
         normLam = Lambda / Lambda.sum()
         samp_idx = np.random.choice(normLam.size, size=N, p=normLam.ravel(order="C"))
         x = (X.ravel(order="C"))[samp_idx] + .25*dx*np.random.randn(len(samp_idx))

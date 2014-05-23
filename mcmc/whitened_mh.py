@@ -4,7 +4,7 @@ def spherical_proposal(theta, prop_scale=.05):
   """ jitters theta with spherical gaussian noise """
   thp = theta + prop_scale*np.random.randn(len(theta))
   if np.any(thp < 0): 
-    print thp
+    #print thp
     return None
   else: 
     return thp

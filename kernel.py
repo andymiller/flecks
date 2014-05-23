@@ -1,4 +1,5 @@
 import numpy as np
+import scipy as sp
 from scipy.spatial.distance import cdist
 from scipy.stats import gamma
 from kron_util import kron_mat_vec_prod
@@ -46,7 +47,8 @@ class Kernel(object):
       'sqeu' : SQEKernelUnscaled(),
       'sm'   : SpectralMixtureKernel(),
       'kron' : MultiKronKernel(), 
-      'per'  : PerKernel()
+      'per'  : PerKernel(),
+      'per_unscaled' : PerKernelUnscaled()
       }.get(kernel_name, SQEKernel())
 
   def K(self, Xi, Xj, hypers=None): 
@@ -66,12 +68,22 @@ class Kernel(object):
     return L.dot(nu)
 
   def whiten_process(self, f, hypers, pts): 
+    #TODO whitening is messed up here
     L = np.linalg.cholesky( self.K(pts, pts, hypers) + 1e-8*np.eye(len(pts)) )
-    Linv = np.linalg.inv(L)
-    nu = Linv.dot(f)
-    #print "Nu, should look normal, 0, 1", nu
+    nu = sp.linalg.solve_triangular(L, f, lower=True)
+    if nu.var() > 10: 
+      print nu.mean(), nu.var()
+      raise "!!!! ===> nu moments not right!!!: "
     return nu
 
+  def conditional_params(self, f, pts, pred_pts, hypers, jitter=0.):
+    Kxx = self.K(pts, pts, hypers) + np.eye(len(pts))*jitter
+    Kxp = self.K(pts, pred_pts, hypers) 
+    #Kxx_inv = np.linalg.inv(Kxx)
+    mu_pred = Kxp.T.dot( np.linalg.solve(Kxx,f) )
+    Kpp = self.K(pred_pts, pred_pts, hypers) + jitter*np.eye(len(pred_pts))
+    Sig_pred = Kpp - Kxp.T.dot( np.linalg.solve(Kxx, Kxp) )
+    return mu_pred, Sig_pred
 
 class MultiKronKernel(Kernel): 
   """ maintains a list of kernels corresponding to each dimension. 
@@ -79,11 +91,15 @@ class MultiKronKernel(Kernel):
   is a tensor product kernel, so it's Gram matrix can only be instantiated 
   over *regular grids* in each dimension.  This is ideal for a discretized 
   approximation to a space. """
-  def __init__(self, kernel_names=["sqeu", "sqeu"]): 
+  def __init__(self, kernel_names=["sqeu", "sqeu"], kernels=None): 
     self._scale = 1.
     self._kerns = []
-    for kname in kernel_names:
-      self._kerns.append( SQEKernelUnscaled()) # Kernel.factory(kname) )
+    if kernels is not None: 
+      self._kerns = kernels
+    else: 
+      #TODO fix the factory?
+      for kname in kernel_names:
+        self._kerns.append( SQEKernelUnscaled() ) # Kernel.factory(kname) )
       #self._kerns.append( Kernel.factory(kname) )
   
   def _gram_list(self, hparams, grids): 
@@ -105,6 +121,7 @@ class MultiKronKernel(Kernel):
     lls = 0
     for d in range(len(hparams)):
       lls += self._kerns[d].hyper_prior_lnpdf(hparams[d])
+    lls += gamma(2, scale=2).logpdf(scale)
     return lls
 
   def hypers(self): 
@@ -152,6 +169,11 @@ class MultiKronKernel(Kernel):
     nu = kron_mat_vec_prod(Ls_inverse, f)
     return nu
 
+  def hyper_names(self): 
+    hnames = ["scale"]
+    for kern in self._kerns:
+      hnames += kern.hyper_names()
+    return hnames 
 
 class SpectralMixtureKernel(Kernel):
   """ Simple, one-dimensional spectral mixture kernel.  The 
@@ -204,14 +226,16 @@ class SpectralMixtureKernel(Kernel):
 class SQEKernelUnscaled(Kernel):
   """ SQE Kernel (only one dimension )with only one 
   hyper paramter, the length scale """
-  def __init__(self, length_scale=1):
+  def __init__(self, length_scale=1, alpha0=12, beta0=.5):
     self._length_scale = length_scale
-  
+    self._alpha0 = alpha0      #shape/convolution parameter
+    self._beta0 = beta0        #scale, inverse rate parameter
+
   def K(self, Xi, Xj, length_scale=None): 
     """ gram mat between Xi and Xj """
     if length_scale is not None:
       self._length_scale = length_scale
-  
+
     # reshape to make sure they are stacks of vecs
     if len(Xi.shape) == 1:
       Xi = np.reshape( Xi, (-1, 1) )
@@ -224,13 +248,20 @@ class SQEKernelUnscaled(Kernel):
 
   def hyper_prior_lnpdf(self, hypers): 
     """ jeffrey's/scale-free prior on length scales """
-    #return -np.sum(np.log(hypers))
-    return np.sum(gamma(12, scale=.5).logpdf(hypers))
+    self._length_scale = hypers[0]
+    ll_prior = gamma(self._alpha0, scale=self._beta0).logpdf(self._length_scale)
+    return ll_prior
 
+  def hyper_names(self): 
+    return ["length_scale"]
+
+#########################################################
+# Periodic kernel and its unscaled (fixed scaled)version
+#########################################################
 class PerKernel(Kernel):
   """ Periodic kernel """
   def __init__(self, scale=5., per=5., length_scale=10.): 
-    self._set_hypers([per, length_scale, scale])
+    self._set_hypers([scale, per, length_scale])
   
   def _set_hypers(self, hypers=[5., 5., 10.]):
     self._scale, self._per, self._length_scale = hypers
@@ -238,7 +269,7 @@ class PerKernel(Kernel):
   def K(self, Xi, Xj, hypers=None):
     if hypers is not None:
       self._set_hypers(hypers)
-    
+
     if len(Xi.shape)==1:
       Xi = np.reshape(Xi, (-1,1))
       Xj = np.reshape(Xj, (-1,1))
@@ -253,10 +284,36 @@ class PerKernel(Kernel):
     return np.array([self._scale, self._per, self._length_scale])
 
   def hyper_prior_lnpdf(self, hypers):
-    return np.sum( 1./hypers )
+    self._set_hypers(hypers)
+    ll_scale  = gamma(2, scale=2).logpdf(self._scale)
+    ll_per    = gamma(2, scale=2).logpdf(self._per)
+    ll_lscale = gamma(2, scale=2).logpdf(self._length_scale)
+    return ll_scale+ll_per+ll_lscale
   
   def hyper_names(self):
     return ["Scale", "Period", "Length Scale"]
+
+class PerKernelUnscaled(PerKernel):
+  """ Periodic kernel without the scale parameter """
+  def __init__(self, fixed_scale=1., per=5., length_scale=10.):
+    self._fixed_scale = fixed_scale
+    self._set_hypers([per, length_scale])
+
+  def _set_hypers(self, hypers=[5.,10.]):
+    self._scale = self._fixed_scale
+    self._per, self._length_scale  = hypers
+
+  def hypers(self):
+    return np.array([self._per, self._length_scale])
+
+  def hyper_prior_lnpdf(self, hypers):
+    self._set_hypers(hypers)
+    ll_per    = gamma(2, scale=.5).logpdf(self._per)
+    ll_lscale = gamma(2, scale=.5).logpdf(self._length_scale)
+    return ll_per+ll_lscale
+  
+  def hyper_names(self):
+    return ["Period", "Length Scale"]
 
 ##################################################
 # TODO implement parent class functions
