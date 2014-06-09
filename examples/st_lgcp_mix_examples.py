@@ -1,12 +1,11 @@
 import pylab as plt
 import numpy as np
-from util import gen_synthetic_data
+from lgcp.examples.util import gen_synthetic_data
 from lgcp.st_mix_lgcp import SpatioTemporalMixLGCP
 
 #def st_lgcp_mix_examples_1d():
-#    """ Very simple 1d space example """
-
 if __name__=="__main__":
+    """ Very simple 1d space example """
     np.random.seed(100)
 
     # example parameters and sythetic data
@@ -67,7 +66,14 @@ if __name__=="__main__":
                                    tgrid_dims = tgrid_dims/2,
                                    tbbox      = tbbox/2 )
     model.describe()
-    w_samps, b_samps, th_samps, lls = model.fit(data, Nsamps=1000)
+
+
+    init_xh = np.array( [[1, .3], [1, .3]] )
+    init_th = np.array( [[15., 20.], [15, 20.]] )
+    w_samps, b_samps, th_samps, lls = model.fit( data, 
+                                                 Nsamps  = 500, 
+                                                 init_xh = init_xh,  
+                                                 init_th = init_th )
     max_idx = lls.argmax()
     model.plot_basis_from_samp(b_samps[max_idx], axarr[0,1])
     model.plot_weights_from_samp(w_samps[max_idx], axarr[1,1])
@@ -82,17 +88,16 @@ if __name__=="__main__":
     # visualize resulting posterior intensity surfs
     ##
     #create ground truth basis/weights 
-    Lambda_gt = B_gt.T.dot(W_gt)  #V by T matrix
-    V,T       = Lambda_gt.shape
-    ll_gt     = np.sum(model._grid_obs*np.log(Lambda) - Lambda )
     #compute posterior surface
-    Lambda_mean, Lambda_var = model.posterior_mean_var_lambda(samp_start=500, thin=5)
+    Lambda_mean, Lambda_var = model.posterior_mean_var_lambda(samp_start=10, thin=5)
+    Lambda_gt = B_gt.T.dot(W_gt)  #V by T matrix
+    Lambda_gt_train = Lambda_gt[:,0:np.floor( Lambda_gt.shape[1]/2 )]
 
     #plot comparison
     fig, axarr = plt.subplots(3,1)
-    vmin = np.min( np.concatenate([Lambda, Lambda_mean]) )
-    vmax = np.max( np.concatenate([Lambda, Lambda_mean]) )
-    axarr[0].imshow(Lambda_gt[:,0:np.floor(T/2)], origin='lower', vmin=vmin, vmax=vmax, 
+    vmin = np.min( np.column_stack([Lambda_gt, Lambda_mean]) )
+    vmax = np.max( np.column_stack([Lambda_gt, Lambda_mean]) )
+    axarr[0].imshow(Lambda_gt_train, origin='lower', vmin=vmin, vmax=vmax, 
                                extent=[0,tbbox[1]/2, xbbox[0][0], xbbox[0][1]])
     axarr[0].set_title('Ground truth intensity function')
     mean_im = axarr[1].imshow(Lambda_mean, origin='lower', vmin=vmin, vmax=vmax, 
@@ -117,9 +122,6 @@ if __name__=="__main__":
     #Omega_gt_0 = Omega_gt_biased.mean(axis=1)
     #Omega_gt = np.column_stack((Omega_gt_0, (Omega_gt_biased.T-Omega_gt_0).T))
     #th_gt = np.concatenate( (Beta_gt.ravel(), Omega_gt.ravel()) ) 
-    print "Ground truth loglike: ", ll_gt #model._log_like(th_gt)
-    print "sample max loglike: ", lls.max()
-
 
     #################################################
     # make predictions
@@ -151,8 +153,9 @@ if __name__=="__main__":
     plt.plot(full_t, full_w.T)
     plt.show()
 
-
-#if __name__=="__main__":
-#    st_lgcp_mix_examples_1d()
+    #ground truth loglike
+    ll_gt     = np.sum(model._grid_obs*np.log(Lambda_gt_train) - Lambda_gt_train )
+    print "Ground truth loglike: ", ll_gt #model._log_like(th_gt)
+    print "sample max loglike: ", lls.max()
 
 

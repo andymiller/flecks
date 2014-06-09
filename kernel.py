@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 from scipy.spatial.distance import cdist
 from scipy.stats import gamma
-from kron_util import kron_mat_vec_prod
+from util.kron_util import kron_mat_vec_prod
 
 """
 Kernel objects: these are very Gaussian Process oriented kernels.  A 
@@ -85,6 +85,12 @@ class Kernel(object):
     Sig_pred = Kpp - Kxp.T.dot( np.linalg.solve(Kxx, Kxp) )
     return mu_pred, Sig_pred
 
+  def hyper_names(self): 
+    return self._hyper_names
+
+#
+# kronecker kernel (composed of multiple kernels)
+#
 class MultiKronKernel(Kernel): 
   """ maintains a list of kernels corresponding to each dimension. 
   This class assumes that the Kernel over the multi-dimensional space
@@ -106,10 +112,11 @@ class MultiKronKernel(Kernel):
     """ generate a list of gram matrices, one for each dimension, 
     given the fixed grid """
     scale, kern_hypers = self._chunk_hypers(hparams)
+    #print "multikron kernel hypers in: ", scale, kern_hypers
     scale = scale ** (1./len(grids))
     Ks = []
     for d in range(len(self._kerns)):
-        Kd = self._kerns[d].K( grids[d], grids[d], kern_hypers[d]) + \
+        Kd = self._kerns[d].K(grids[d], grids[d], kern_hypers[d]) + \
                                np.diag(1e-8*np.ones(len(grids[d])) )
         Ks.append(scale*Kd)
     return Ks
@@ -230,6 +237,7 @@ class SQEKernelUnscaled(Kernel):
     self._length_scale = length_scale
     self._alpha0 = alpha0      #shape/convolution parameter
     self._beta0 = beta0        #scale, inverse rate parameter
+    self._hyper_names = ["length_scale"]
 
   def K(self, Xi, Xj, length_scale=None): 
     """ gram mat between Xi and Xj """
@@ -252,9 +260,6 @@ class SQEKernelUnscaled(Kernel):
     ll_prior = gamma(self._alpha0, scale=self._beta0).logpdf(self._length_scale)
     return ll_prior
 
-  def hyper_names(self): 
-    return ["length_scale"]
-
 #########################################################
 # Periodic kernel and its unscaled (fixed scaled)version
 #########################################################
@@ -262,7 +267,8 @@ class PerKernel(Kernel):
   """ Periodic kernel """
   def __init__(self, scale=5., per=5., length_scale=10.): 
     self._set_hypers([scale, per, length_scale])
-  
+    self._hyper_names = ["Scale", "Period", "Length Scale"]
+
   def _set_hypers(self, hypers=[5., 5., 10.]):
     self._scale, self._per, self._length_scale = hypers
 
@@ -289,18 +295,16 @@ class PerKernel(Kernel):
     ll_per    = gamma(2, scale=2).logpdf(self._per)
     ll_lscale = gamma(2, scale=2).logpdf(self._length_scale)
     return ll_scale+ll_per+ll_lscale
-  
-  def hyper_names(self):
-    return ["Scale", "Period", "Length Scale"]
 
 class PerKernelUnscaled(PerKernel):
   """ Periodic kernel without the scale parameter """
-  def __init__(self, fixed_scale=1., per=5., length_scale=10., min_per=1):
+  def __init__(self, fixed_scale=1., per=5., length_scale=10., min_per=2.):
     self._fixed_scale = fixed_scale
     self._min_per     = min_per             #fix a minimum period to fix aliasing effects 
                                             #(tiny, periods=high frequencies which can 
                                             # look like lower frequencies/bigger periods with weird jaggies
     self._set_hypers([per, length_scale])
+    self._hyper_names = ["Period", "Length Scale"]
 
   def _set_hypers(self, hypers=[5.,10.]):
     self._scale = self._fixed_scale
@@ -311,12 +315,37 @@ class PerKernelUnscaled(PerKernel):
 
   def hyper_prior_lnpdf(self, hypers):
     self._set_hypers(hypers)
-    ll_per    = gamma(2, scale=.5).logpdf(self._per - self._min_per)  #min shifted
-    ll_lscale = gamma(2, scale=.5).logpdf(self._length_scale)
+    ll_per    = gamma(2, scale=2).logpdf(self._per - self._min_per)  #min shifted
+    ll_lscale = gamma(2, scale=2).logpdf(self._length_scale)
     return ll_per+ll_lscale
-  
-  def hyper_names(self):
-    return ["Period", "Length Scale"]
+
+class LinearKernel(Kernel): 
+  """ Linear kernel, K_lin(x,x') = sig2_b + sig2_v(x-c)(x'-c) """
+  def __init__(self, bias_var=.5, slope_var=.1, offset=0): 
+    self._set_hypers([bias_var, slope_var, offset])
+    self._hyper_names = ["Bias var", "Slope var", "Offset"] 
+
+  def _set_hypers(self, hypers=[5., 5., 10.]):
+    self._bias_var, self._slope_var, self._offset = hypers
+
+  def K(self, Xi, Xj, hypers=None):
+    if hypers is not None:
+      self._set_hypers(hypers)
+    if len(Xi.shape)==1:
+      Xi = np.reshape(Xi, (-1,1))
+      Xj = np.reshape(Xj, (-1,1))
+    outers = np.outer(Xi-self._offset, Xj-self._offset) 
+    return self._bias_var + self._slope_var*outers
+
+  def hypers(self):
+    return np.array([self._bias_var, self._slope_var, self._offset])
+
+  def hyper_prior_lnpdf(self, hypers):
+    self._set_hypers(hypers)
+    ll_scale  = gamma(2, scale=2).logpdf(self._bias_var)
+    ll_per    = gamma(2, scale=2).logpdf(self._slope_var)
+    ll_lscale = normal(mean=0,scale=10).logpdf(self._offset)
+    return ll_scale+ll_per+ll_lscale
 
 ##################################################
 # TODO implement parent class functions

@@ -1,6 +1,9 @@
 import numpy as np
 import scipy as sp
+import numpy.random as npr
 from scipy.integrate import quad
+from scipy.stats import multivariate_normal
+import pylab as plt
 
 def gen_synthetic_data(xdim = 1, K=2, 
                        xgrid_dims=[100], xbbox=[[-10,10]], 
@@ -69,7 +72,73 @@ def gen_synthetic_data(xdim = 1, K=2,
         x = (X.ravel(order="C"))[samp_idx] + .25*dx*np.random.randn(len(samp_idx))
         t = (T.ravel(order="C"))[samp_idx] + .25*dt*np.random.randn(len(samp_idx))   
         return np.column_stack((x,t)), B_gt, W_gt, xgrid, tgrid, X, T, Z
-    else: 
+    elif xdim==2: 
+
+        # compute volume of product function
+        V = np.prod(xgrid_dims)
+        print "number of spatial tiles: ", V
+        dx = np.prod([float(xbbox[i][1] - xbbox[i][0])/xgrid_dims[i] for i in range(len(xgrid_dims))])
+        dt = float(tbbox[1] - tbbox[0])/tgrid_dims[0]
+        print "  dx = ", dx
+        print "  dt = ", dt
+
+        # create spatial bump funcs
+        xgs = [np.linspace(xbbox[i][0], xbbox[i][1], xgrid_dims[i]) for i in range(len(xgrid_dims))]
+        xv, yv = np.meshgrid(xgs[0], xgs[1], indexing='ij')
+        xgrid = np.column_stack( (xv.ravel(), yv.ravel()) )
+        B_gt = np.zeros((K, len(xgrid)))
+        for k in range(K): 
+          num_means = npr.randint(3) + 2
+          means = 2.5*npr.randn(num_means,2) + 3*npr.randn(2)
+          Sigs  = np.zeros((num_means, 2, 2))
+          ws    = npr.rand(num_means)
+          ws   /= ws.sum()
+          for ii in range(num_means): 
+            sig = 2
+            A = sig*sig*np.eye(2)
+            rho = npr.rand()*sig*sig
+            rho = -rho if npr.rand() > .5 else rho
+            A[0,1] = A[1,0] = rho
+            Sigs[ii,:,:] = A
+            Zii = multivariate_normal.pdf(xgrid, mean=means[ii], cov=Sigs[ii])
+            B_gt[k] += ws[ii]*Zii
+
+        # normalize - truncated gaussians
+        row_sums = B_gt.sum(axis=1)*dx
+        B_gt /= row_sums[:,np.newaxis]
+        #plt.imshow(B_gt[1].reshape(xgrid_dims))
+        #plt.show()
+
+        #create temporal weights
+        def wfunc(t, per): 
+           return 30*np.sin(2*np.pi*t/per) + 150*npr.rand()
+        omegas = np.array([23.5, 10, 15, 34.5, 20])[0:K]
+        tgrid = np.linspace(tbbox[0], tbbox[1], tgrid_dims[0])
+        W_gt = np.array([wfunc(tgrid, omega) for omega in omegas])
+    
+        # sample points
+        vol = np.sum(B_gt.T.dot(W_gt)*dx*dt)
+        N   = np.random.poisson(lam=vol)
+        print "total volume: ", vol
+        print "num points sampled: ", N
+        X, T = np.meshgrid(np.arange(V), np.arange(tgrid_dims[0]), indexing='ij')
+ 
+        #generate data from discretized intensity (directly)
+        Lambda  = B_gt.T.dot(W_gt) * dx * dt #intensity is outer prod of B and W
+        print "... gen data volume 2: ", np.sum(Lambda)
+        normLam = Lambda / Lambda.sum()
+        samp_idx = npr.choice(normLam.size, size=N, p=normLam.ravel(order="C"))
+        vs = (X.ravel(order="C"))[samp_idx]
+        print vs.shape
+        print min(vs)
+        print max(vs)
+        print xgrid.shape
+        ts = (T.ravel(order="C"))[samp_idx]
+        x  = xgrid[vs,:] + dx*npr.randn(len(vs),2)
+        t  = tgrid[ts] + dt*npr.randn(len(ts))
+        return np.column_stack((x,t)), B_gt, W_gt, xgrid, tgrid
+
+    else:
         raise NotImplementedError, 'Synthetic x dim greater than 1 not implemented'
 
 
