@@ -234,7 +234,7 @@ class SQEKernelUnscaled(Kernel):
   """ SQE Kernel (only one dimension )with only one 
   hyper paramter, the length scale """
   def __init__(self, length_scale=1, alpha0=12, beta0=.5):
-    self._length_scale = length_scale
+    self._length_scale = alpha0*beta0
     self._alpha0 = alpha0      #shape/convolution parameter
     self._beta0 = beta0        #scale, inverse rate parameter
     self._hyper_names = ["length_scale"]

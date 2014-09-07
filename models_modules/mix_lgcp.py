@@ -1,10 +1,10 @@
 import numpy as np
 from pproc import DiscretizedPointProcess
-from mcmc.ess import elliptical_slice
-from util import  whitened_mh, spherical_proposal, normalize_rows, resample_assignments
-#from cutil import resample_assignments
-from kernel import MultiKronKernel
-from kron_util import kron_mat_vec_prod
+from ..mcmc.ess import elliptical_slice
+from ..mcmc.whitened_mh import whitened_mh, spherical_proposal
+from ..mcmc.sample_assignments import sample_assignments
+from ..kernel import MultiKronKernel
+from ..util.kron_util import kron_mat_vec_prod
 import pylab as plt
 #
 # models a group of discretized log gaussian cox processes
@@ -40,7 +40,8 @@ class MixLGCP(DiscretizedPointProcess):
     #self._fixed_basis = np.loadtxt('/Users/acm/Code/xyhoops/andyfranks/pyscripts/nmf_basis_rank_6.txt').T
 
   def fit(self, data, Nsamps=2000, prop_scale=1, \
-                verbose=True, burnin=500, num_ess=10, init_th=None):
+                verbose=True, burnin=500, num_ess=10, 
+                init_th=None, init_W=None, init_B=None, init_H=None):
     """ Mixture of LGCP main fit method:
           - data should come in as a dim by N dimensional numpy array
     """
@@ -64,23 +65,16 @@ class MixLGCP(DiscretizedPointProcess):
     alpha0 = np.ones(self._K)*.1
     beta0  = np.ones(self._K)*.1
 
-    # sample from the posterior w/ ESS, slice sample Hypers
-    #if init_th is None:
-    #  th_curr = np.zeros( self._K*self._Nz + self._K*self._Nw ) #current state of all normal prior
-    #else:
-    #  th_curr = init_th
-    h_curr  = self._kern.hypers()              # current values of hyper params
-    h_curr  = np.array([1, 8, 8])
-    ll_curr = 0.0                              # current log likelihood of obs
+    # initialize kernel hyper parameters
+    h_curr = self._kern.hypers() if init_H is None else init_H
+    ll_curr = 0.0  
 
-    #initialize current weights and bases
-    if init_th is None:
-      w_curr = np.ones( self._K*self._Nw )       # current weights
-      b_curr = np.zeros( self._K*self._Nz )      # current log bases
-    else:
-      w_curr = init_th[0:self._K*self._Nw]
-      b_curr = init_th[self._K*self._Nw:]
-    z_curr = np.zeros( (self._Nw, self._Nz-1, self._K), dtype=np.int ) # current assignments
+    # initialize current weights and bases
+    w_curr = np.ones(self._K*self._Nw) if init_W is None else init_W
+    b_curr = np.zeros(self._K*self._Nz) if init_B is None else init_B
+
+    # current assignments
+    z_curr = np.zeros( (self._Nw, self._Nz-1, self._K), dtype=np.int ) 
 
     # keep track of all samples
     #th_samps = np.zeros( (Nsamps, len(th_curr)) )
@@ -97,7 +91,7 @@ class MixLGCP(DiscretizedPointProcess):
       ##
       W = w_curr.reshape((self._K, self._Nw))
       B = self._beta_to_basis(b_curr)
-      z_curr = resample_assignments(W, B, self._grid_counts, z_curr)
+      z_curr = sample_assignments(W, B, self._grid_counts, z_curr)
 
       #Lambda = W.T.dot(B)  # Npproc by Nz matrix
       #for n in range(self._Nw):

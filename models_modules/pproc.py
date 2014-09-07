@@ -1,5 +1,5 @@
 import numpy as np
-from util.grid_util import nd_grid_centers, x_grid_centers
+from ..util.grid_util import nd_grid_centers, x_grid_centers
 
 class DiscretizedPointProcess(object):
   """ Models a very generic discretized point process.
