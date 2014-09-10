@@ -1,11 +1,12 @@
 import numpy as np
 import numpy.random as npr
 from pproc import DiscretizedPointProcess
-from ..mcmc.ess import elliptical_slice
-from ..mcmc.whitened_mh import whitened_mh
-from ..mcmc.slicesample import slice_sample
-from ..mcmc.pseudo_marginal import approx_log_marg_like, poisson_log_like
-from ..mcmc.sample_assignments import sample_assignments
+from ..inference.ess import elliptical_slice
+from ..inference.whitened_mh import whitened_mh
+from ..inference.slicesample import slice_sample
+from ..inference.pseudo_marginal import approx_log_marg_like
+from ..likelihoods.poisson import poisson_log_posterior
+from ..inference.sample_assignments import sample_assignments
 from ..util.misc import logmulexp
 from ..kernel import Kernel, MultiKronKernel, SQEKernelUnscaled
 from scipy.misc import logsumexp

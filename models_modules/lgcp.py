@@ -1,7 +1,7 @@
 import numpy as np
 from pproc import DiscretizedPointProcess
-from ..mcmc.ess import elliptical_slice
-from ..mcmc.whitened_mh import  whitened_mh, spherical_proposal
+from ..inference.ess import elliptical_slice
+from ..inference.whitened_mh import  whitened_mh, spherical_proposal
 from ..kernel import MultiKronKernel
 from ..util.kron_util import kron_mat_vec_prod
 
@@ -19,8 +19,6 @@ from ..util.kron_util import kron_mat_vec_prod
 #  output: posterior samples for intensity function value 
 #          at specified grid
 #
-#
-
 class LGCP(DiscretizedPointProcess): 
 
   def __init__(self, dim=2, grid_dim=(50,50), bbox=[(0,1), (0,1)], \
@@ -33,9 +31,9 @@ class LGCP(DiscretizedPointProcess):
       self._kern = MultiKronKernel(kernel_types)
     else: 
       self._kern = Kern
-  
+
   def fit(self, data, Nsamps=2000, prop_scale=1, \
-                verbose=True, burnin=500, num_ess=10): 
+                do_pseudo_marg=False, verbose=True, burnin=500, num_ess=10):
     """ data should come in as a dim by N dimensional numpy array """
 
     # grid data into tile counts
@@ -57,21 +55,24 @@ class LGCP(DiscretizedPointProcess):
     for i in range(Nsamps):
       if i%10==0 and verbose: print "  samp %d of %d"%(i,Nsamps)
 
-      ## whitens/unwhitens 
-      def whiten(th, f): 
-        return self._kern.whiten_process(f, th, self._grids)
-      def unwhiten(thp, nu): 
-        return  self._kern.gen_prior(thp, self._grids, nu=nu)
-
       #sample hyper params
-      h_curr, z_hyper, accepted, ll = whitened_mh( h_curr, \
-               z_curr[1:], \
-               whiten_func   = whiten, #lambda(th, f): self._kern.whiten_process(f, th, self._grids), \
-               unwhiten_func = unwhiten, #lambda(thp, nu): self._kern.gen_prior(thp, self._grids, nu=nu), \
-               like_func     = lambda(z): self._log_like(np.append(z_curr[0], z)), \
-               ln_prior      = lambda(h): self._kern.hyper_prior_lnpdf(h), \
-               prop_dist     = lambda(th): spherical_proposal(th, prop_scale))
-      z_curr = np.append(z_curr[0], z_hyper)
+      if do_pseudo_marg: # approximate marg likelihood
+        pass
+        #h_curr, accepted, ll = pseudo_mh( h_curr
+
+      else: # do whitened MH
+        def whiten(th, f): 
+          return self._kern.whiten_process(f, th, self._grids)
+        def unwhiten(thp, nu): 
+          return  self._kern.gen_prior(thp, self._grids, nu=nu)
+        h_curr, z_hyper, accepted, ll = whitened_mh( h_curr,
+           z_curr[1:],
+           whiten_func   = whiten,
+           unwhiten_func = unwhiten,
+           like_func     = lambda(z): self._log_like(np.append(z_curr[0], z)),
+           ln_prior      = lambda(h): self._kern.hyper_prior_lnpdf(h),
+           prop_dist     = lambda(th): spherical_proposal(th, prop_scale))
+        z_curr = np.append(z_curr[0], z_hyper)
 
       ## sample latent surface (multiple runs of ESS)
       for resamp_i in range(num_ess):
@@ -81,7 +82,6 @@ class LGCP(DiscretizedPointProcess):
         z_curr, log_lik = elliptical_slice( z_curr, \
                                             prior_samp, \
                                             self._log_like )
-
 
 
       #store samples

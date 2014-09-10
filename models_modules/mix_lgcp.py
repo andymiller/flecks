@@ -1,8 +1,8 @@
 import numpy as np
 from pproc import DiscretizedPointProcess
-from ..mcmc.ess import elliptical_slice
-from ..mcmc.whitened_mh import whitened_mh, spherical_proposal
-from ..mcmc.sample_assignments import sample_assignments
+from ..inference.ess import elliptical_slice
+from ..inference.whitened_mh import whitened_mh, spherical_proposal
+from ..inference.sample_assignments import sample_assignments
 from ..kernel import MultiKronKernel
 from ..util.kron_util import kron_mat_vec_prod
 import pylab as plt
